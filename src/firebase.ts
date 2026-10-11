@@ -23,7 +23,10 @@ import firebaseConfig from '../firebase-applet-config.json';
 import { AppStoreData } from './types';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
+export const db = getFirestore(
+  app,
+  (firebaseConfig as any).firestoreDatabaseId || 'ai-studio-ecd18365-cd78-45d3-8f5b-ea40811a4d65'
+);
 export const auth = getAuth(app);
 
 // Configure Google Auth Provider with Google Drive File Scope for automatic folder & backup management
