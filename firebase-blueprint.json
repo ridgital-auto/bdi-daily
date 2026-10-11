@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "CloudBackupSnapshot": {
+      "title": "CloudBackupSnapshot",
+      "description": "Stores a complete backup snapshot of BDI Daily Quran & Hadis database, templates, contacts, schedule, gateway settings, and delivery logs for an authenticated admin user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the backup owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerEmail": {
+          "type": "string",
+          "description": "Verified email address of the backup owner.",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "backupLabel": {
+          "type": "string",
+          "description": "Human-readable label for the backup snapshot.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "hadithCount": {
+          "type": "integer",
+          "description": "Total number of hadith/quran items stored in this snapshot."
+        },
+        "contactCount": {
+          "type": "integer",
+          "description": "Total number of contacts stored in this snapshot."
+        },
+        "templateCount": {
+          "type": "integer",
+          "description": "Total number of message templates stored in this snapshot."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Structured map containing hadiths, templates, contacts, schedule, gatewaySettings, and deliveryLogs."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the backup was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the backup was updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "ownerEmail",
+        "backupLabel",
+        "hadithCount",
+        "contactCount",
+        "templateCount",
+        "payload",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/user_backups/{userId}": {
+      "schema": "CloudBackupSnapshot",
+      "description": "Per-user cloud backup document keyed by the user's UID."
+    }
+  }
+}
