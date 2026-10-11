@@ -35,8 +35,10 @@ jobs:
       - name: Build WebApp for GitHub Pages
         run: npm run build
 
-      - name: Copy index.html to 404.html for SPA routing
-        run: cp dist/index.html dist/404.html
+      - name: Prepare SPA 404.html and .nojekyll for GitHub Pages
+        run: |
+          cp dist/index.html dist/404.html
+          touch dist/.nojekyll
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
