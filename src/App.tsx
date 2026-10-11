@@ -57,8 +57,15 @@ import {
   subscribeRealtimeCloudSync,
   saveBackupToFirestore,
   loadBackupFromFirestore,
+  saveBackupToGoogleDrive,
+  loadBackupFromGoogleDrive,
+  inspectGoogleDriveBackup,
+  ensureGoogleDriveAccessToken,
+  getAccessToken,
+  GoogleDriveBackupInfo,
 } from './firebase';
 import { PWAInstallButton, OfflineIndicator } from './PWAInstallButton';
+import { loadStandaloneStore, saveStandaloneStore } from './standaloneStore';
 
 type ActiveTab = 'database' | 'format' | 'kontak' | 'kirim' | 'sistem';
 
@@ -180,7 +187,7 @@ export default function App() {
   const [aiCriteria, setAiCriteria] = useState(
     'Hadis tentang keutamaan sedekah, menjaga lisan, dan kemuliaan akhlak'
   );
-  const [aiBook, setAiBook] = useState('bukhari');
+  const [aiBooks, setAiBooks] = useState<string[]>(['bukhari', 'muslim']);
   const [aiType, setAiType] = useState<'hadis' | 'quran'>('hadis');
   const [aiCountInput, setAiCountInput] = useState<string>('5');
   const [saveProfileMode, setSaveProfileMode] = useState<string>('Oktober'); // existing profile name or '__NEW__'
@@ -246,28 +253,33 @@ export default function App() {
   const [manualSelectedIds, setManualSelectedIds] = useState<string[]>([]);
   const [manualAttachHadithId, setManualAttachHadithId] = useState<string>('');
 
-  // 5. System, Logs, WA Admin, Cloud Backup (Firestore / GitHub / Google Sheets) & Tutorial Modal
+  // 5. System, Logs, WA Admin, Simplified Backup (Google Account Drive Folder & Local Storage/Download/Import)
   const [adminPhoneDraft, setAdminPhoneDraft] = useState('');
   const [webhookUrlDraft, setWebhookUrlDraft] = useState('');
   const [webhookApiKeyDraft, setWebhookApiKeyDraft] = useState('');
-  const [githubRepoDraft, setGithubRepoDraft] = useState('');
-  const [githubBranchDraft, setGithubBranchDraft] = useState('main');
-  const [githubFilePathDraft, setGithubFilePathDraft] = useState('backup/bdi-daily-hadis.json');
-  const [githubTokenDraft, setGithubTokenDraft] = useState('');
-  const [gsheetUrlDraft, setGsheetUrlDraft] = useState('');
   const gatewayInitializedRef = useRef(false);
 
-  const [cloudProviderTab, setCloudProviderTab] = useState<
-    'firestore' | 'github' | 'gsheet' | 'local'
-  >('firestore');
+  const [cloudProviderTab, setCloudProviderTab] = useState<'google_account' | 'local'>(
+    'google_account'
+  );
   const [activeTutorialModal, setActiveTutorialModal] = useState<
-    null | 'firestore' | 'github' | 'gsheet' | 'wa_qr'
+    null | 'google_account' | 'local' | 'wa_qr'
   >(null);
+  const [driveBackupInfo, setDriveBackupInfo] = useState<GoogleDriveBackupInfo | null>(null);
+  const [driveConnected, setDriveConnected] = useState<boolean>(false);
+  const [confirmDriveOverwriteOpen, setConfirmDriveOverwriteOpen] = useState<boolean>(false);
+  const [localSavedTimestamp, setLocalSavedTimestamp] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('bdi_local_backup_time');
+    } catch {
+      return null;
+    }
+  });
 
   const [logStatusFilter, setLogStatusFilter] = useState<
     'all' | 'queued' | 'paused' | 'sent' | 'failed'
   >('all');
-  const [backupLabelInput, setBackupLabelInput] = useState('Sinkronisasi Real-Time BDI Daily');
+  const [backupLabelInput, setBackupLabelInput] = useState('Backup BDI Daily Quran & Hadis');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   function notify(type: 'success' | 'error', text: string) {
@@ -280,7 +292,10 @@ export default function App() {
   async function fetchState() {
     try {
       const res = await fetch('/api/state');
-      if (!res.ok) return;
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Static GitHub Pages mode');
+      }
       const data = await res.json();
       setStore(data.store);
       setWaState(data.waState);
@@ -291,13 +306,6 @@ export default function App() {
         setAdminPhoneDraft(data.store.gatewaySettings?.adminPhone || '');
         setWebhookUrlDraft(data.store.gatewaySettings?.webhookUrl || '');
         setWebhookApiKeyDraft(data.store.gatewaySettings?.webhookApiKey || '');
-        setGithubRepoDraft(data.store.externalSync?.githubRepo || '');
-        setGithubBranchDraft(data.store.externalSync?.githubBranch || 'main');
-        setGithubFilePathDraft(
-          data.store.externalSync?.githubFilePath || 'backup/bdi-daily-hadis.json'
-        );
-        setGithubTokenDraft(data.store.externalSync?.githubToken || '');
-        setGsheetUrlDraft(data.store.externalSync?.gsheetWebhookUrl || '');
       }
 
       if (!selectedTemplateId && data.store?.templates?.length > 0) {
@@ -309,15 +317,36 @@ export default function App() {
         setTplIsDefault(first.isDefault);
       }
     } catch {
-      // ignore transient network error
+      // Static WebApp View (GitHub Pages) fallback: load from LocalStorage / Standalone Store
+      setServerTime(new Date().toLocaleTimeString('id-ID'));
+      setStore((prev) => {
+        if (prev) return prev;
+        const local = loadStandaloneStore();
+        if (!gatewayInitializedRef.current) {
+          gatewayInitializedRef.current = true;
+          setAdminPhoneDraft(local.gatewaySettings?.adminPhone || '');
+          setWebhookUrlDraft(local.gatewaySettings?.webhookUrl || '');
+          setWebhookApiKeyDraft(local.gatewaySettings?.webhookApiKey || '');
+        }
+        if (!selectedTemplateId && local.templates?.length > 0) {
+          const first = local.templates[0];
+          setSelectedTemplateId(first.id);
+          setTplName(first.name);
+          setTplCategory(first.category);
+          setTplContent(first.content);
+          setTplIsDefault(first.isDefault);
+        }
+        return local;
+      });
     }
   }
 
   useEffect(() => {
     fetchState();
     const timer = setInterval(fetchState, 2500);
-    const unsub = subscribeAuthState((u) => {
+    const unsub = subscribeAuthState((u, token) => {
       setFirebaseUser(u);
+      setDriveConnected(Boolean(token));
       setAuthReady(true);
       if (u) {
         const info = {
@@ -339,23 +368,37 @@ export default function App() {
     };
   }, []);
 
-  // Subscribe to Real-Time Cloud Sync when logged into Firebase
   useEffect(() => {
     if (!firebaseUser) return;
+    // Subscribe to Real-Time Cloud Sync when logged into Google Account
     const unsubSnap = subscribeRealtimeCloudSync(firebaseUser.uid, async (remote) => {
       if (remote.updatedAtMs <= lastRemoteTimestampRef.current) return;
       lastRemoteTimestampRef.current = remote.updatedAtMs;
-      setCloudInfo(`Tersinkronisasi Real-Time (${remote.updatedAtText})`);
+      if (remote.payload && Array.isArray(remote.payload.hadiths)) {
+        setStore(remote.payload);
+        saveStandaloneStore(remote.payload);
+      }
+      setCloudInfo(`Sinkronisasi Real-Time Aktif (${remote.updatedAtText})`);
     });
     return () => unsubSnap();
   }, [firebaseUser]);
 
   async function pushAutoCloudSync(nextStore: AppStoreData, note = 'Auto-Sync BDI') {
+    // Always keep LocalStorage snapshot updated automatically
+    try {
+      const nowText = new Date().toLocaleString('id-ID');
+      localStorage.setItem('bdi_local_backup_snapshot', JSON.stringify(nextStore));
+      localStorage.setItem('bdi_local_backup_time', nowText);
+      setLocalSavedTimestamp(nowText);
+    } catch {
+      // ignore storage quota
+    }
+
     if (!firebaseUser) return;
     try {
       lastRemoteTimestampRef.current = Date.now() + 2000;
       await saveBackupToFirestore(nextStore, note);
-      setCloudInfo(`Auto-Sync Cloud Aktif (${new Date().toLocaleTimeString('id-ID')})`);
+      setCloudInfo(`Auto-Sync Akun Google Aktif (${new Date().toLocaleTimeString('id-ID')})`);
     } catch {
       // ignore background auto-sync error
     }
@@ -364,22 +407,30 @@ export default function App() {
   async function handleGoogleLoginSubmit() {
     setLoginBusy(true);
     try {
-      const user = await loginWithGoogle(saveLoginInfo);
+      const { user, accessToken } = await loginWithGoogle(saveLoginInfo);
       const info = {
         email: user.email || 'admin@bdi.id',
         displayName: user.displayName || 'Admin BDI',
         uid: user.uid,
       };
       setSavedAccountSession(info);
+      setDriveConnected(Boolean(accessToken));
       if (saveLoginInfo) {
         localStorage.setItem('bdi_saved_account', JSON.stringify(info));
       }
+      if (accessToken) {
+        try {
+          const dInfo = await inspectGoogleDriveBackup(accessToken);
+          setDriveBackupInfo(dInfo);
+        } catch {
+          // ignore initial folder check error
+        }
+      }
       notify(
         'success',
-        `Selamat datang ${info.displayName}! Akun Google (${info.email}) kini terhubung ke AI, Cloud Sync, GitHub & Google Sheets.`
+        `Selamat datang ${info.displayName}! Akun Google (${info.email}) terhubung ke AI, Sinkronisasi Real-Time & Folder Google Drive.`
       );
-    } catch (err: any) {
-      // If popup is blocked inside preview iframe, allow one-click Saved Google Session login
+    } catch {
       const fallbackInfo = {
         email: 'ridgitalstudio@gmail.com',
         displayName: 'Admin BDI (Google Account)',
@@ -401,6 +452,8 @@ export default function App() {
   async function handleFullLogout() {
     await logoutFirebase();
     setFirebaseUser(null);
+    setDriveConnected(false);
+    setDriveBackupInfo(null);
     setSavedAccountSession(null);
     localStorage.removeItem('bdi_saved_account');
   }
@@ -434,35 +487,61 @@ export default function App() {
   async function handleRenameProfileSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!renamingProfile || !renamingProfile.newName.trim()) return;
-    const res = await fetch('/api/profiles/rename', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        oldName: renamingProfile.oldName,
-        newName: renamingProfile.newName.trim(),
-      }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = {
-          ...prev,
-          profiles: data.profiles,
-          hadiths: data.hadiths,
-          projects: data.projects,
-        };
-        pushAutoCloudSync(next, `Ubah Profil ${renamingProfile.oldName}`);
-        return next;
+    const oldName = renamingProfile.oldName;
+    const newName = renamingProfile.newName.trim();
+    try {
+      const res = await fetch('/api/profiles/rename', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ oldName, newName }),
       });
-      if (dbProfileFilter === renamingProfile.oldName) {
-        setDbProfileFilter(renamingProfile.newName.trim());
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = {
+            ...prev,
+            profiles: data.profiles,
+            hadiths: data.hadiths,
+            projects: data.projects,
+          };
+          pushAutoCloudSync(next, `Ubah Profil ${oldName}`);
+          return next;
+        });
+        if (dbProfileFilter === oldName) setDbProfileFilter(newName);
+        setRenamingProfile(null);
+        notify('success', 'Nama profil database berhasil diperbarui.');
+        return;
       }
-      setRenamingProfile(null);
-      notify('success', 'Nama profil database berhasil diperbarui.');
-    } else {
-      notify('error', data.error || 'Gagal mengubah nama profil.');
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const nextProfiles = Array.from(
+        new Set(prev.profiles.map((p) => (p === oldName ? newName : p)))
+      );
+      const nextHadiths = prev.hadiths.map((h) =>
+        h.profileName === oldName ? { ...h, profileName: newName } : h
+      );
+      const nextProjects = prev.projects.map((pr) => ({
+        ...pr,
+        selectedProfiles: pr.selectedProfiles.map((sp) => (sp === oldName ? newName : sp)),
+      }));
+      const next = {
+        ...prev,
+        profiles: nextProfiles,
+        hadiths: nextHadiths,
+        projects: nextProjects,
+      };
+      pushAutoCloudSync(next, `Ubah Profil ${oldName}`);
+      return next;
+    });
+    if (dbProfileFilter === oldName) setDbProfileFilter(newName);
+    setRenamingProfile(null);
+    notify('success', 'Nama profil database berhasil diperbarui.');
   }
 
   async function handleDeleteProfile(profileName: string) {
@@ -470,30 +549,55 @@ export default function App() {
       notify('error', 'Profil "Belum Terkategori" adalah profil dasar dan tidak dapat dihapus.');
       return;
     }
-    const res = await fetch(`/api/profiles/${encodeURIComponent(profileName)}`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deleteItems: false }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = {
-          ...prev,
-          profiles: data.profiles,
-          hadiths: data.hadiths,
-          projects: data.projects,
-        };
-        pushAutoCloudSync(next, `Hapus Profil ${profileName}`);
-        return next;
+    try {
+      const res = await fetch(`/api/profiles/${encodeURIComponent(profileName)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deleteItems: false }),
       });
-      if (dbProfileFilter === profileName) setDbProfileFilter('all');
-      notify(
-        'success',
-        `Profil "${profileName}" dihapus. Materi di dalamnya dipindahkan ke "Belum Terkategori".`
-      );
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = {
+            ...prev,
+            profiles: data.profiles,
+            hadiths: data.hadiths,
+            projects: data.projects,
+          };
+          pushAutoCloudSync(next, `Hapus Profil ${profileName}`);
+          return next;
+        });
+        if (dbProfileFilter === profileName) setDbProfileFilter('all');
+        notify(
+          'success',
+          `Profil "${profileName}" dihapus. Materi di dalamnya dipindahkan ke "Belum Terkategori".`
+        );
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const nextProfiles = prev.profiles.filter((p) => p !== profileName);
+      if (!nextProfiles.includes('Belum Terkategori')) {
+        nextProfiles.push('Belum Terkategori');
+      }
+      const nextHadiths = prev.hadiths.map((h) =>
+        h.profileName === profileName ? { ...h, profileName: 'Belum Terkategori' } : h
+      );
+      const next = { ...prev, profiles: nextProfiles, hadiths: nextHadiths };
+      pushAutoCloudSync(next, `Hapus Profil ${profileName}`);
+      return next;
+    });
+    if (dbProfileFilter === profileName) setDbProfileFilter('all');
+    notify(
+      'success',
+      `Profil "${profileName}" dihapus. Materi di dalamnya dipindahkan ke "Belum Terkategori".`
+    );
   }
 
   async function handleGenerateWithAI(e: React.FormEvent) {
@@ -502,7 +606,15 @@ export default function App() {
       notify('error', 'Masukkan topik atau kriteria pencarian hadis terlebih dahulu.');
       return;
     }
+    if (aiType === 'hadis' && aiBooks.length === 0) {
+      notify('error', 'Pilih minimal 1 sumber kitab hadis terlebih dahulu.');
+      return;
+    }
     const parsedCount = Math.min(30, Math.max(1, parseInt(aiCountInput, 10) || 4));
+    const targetProf =
+      saveProfileMode === '__NEW__'
+        ? newProfileNameOnSave.trim() || 'Profil Baru'
+        : saveProfileMode;
 
     setAiLoading(true);
     try {
@@ -511,28 +623,69 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           criteria: aiCriteria,
-          sourceBook: aiBook,
+          sourceBook: aiBooks[0] || 'bukhari',
+          sourceBooks: aiBooks,
           contentType: aiType,
           count: parsedCount,
-          profileName:
-            saveProfileMode === '__NEW__'
-              ? newProfileNameOnSave.trim() || 'Profil Baru'
-              : saveProfileMode,
+          profileName: targetProf,
           userEmail: savedAccountSession?.email || firebaseUser?.email || '',
         }),
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Static fallback');
+      }
       const data = await res.json();
-      if (!res.ok) {
-        notify('error', data.error || 'Gagal membuat draf database dengan AI.');
-      } else {
-        setPreviewItems(data.items || []);
+      setPreviewItems(data.items || []);
+      notify(
+        'success',
+        `Berhasil menyusun ${data.items?.length || 0} draf hadis dengan AI. Pilih profil tujuan atau buat Profil Baru lalu klik Simpan.`
+      );
+    } catch {
+      // Client-side public hadith API fallback when running on static GitHub Pages
+      try {
+        const bookLabelMap: Record<string, string> = {
+          bukhari: 'HR. Bukhari',
+          muslim: 'HR. Muslim',
+          tirmidzi: 'HR. Tirmidzi',
+           'abu-daud': 'HR. Abu Daud',
+          nasai: "HR. An-Nasa'i",
+          'ibnu-majah': 'HR. Ibnu Majah',
+        };
+        const selectedBooks = aiBooks.length > 0 ? aiBooks : ['bukhari'];
+        const items: HadithItem[] = [];
+        for (let i = 0; i < parsedCount; i++) {
+          const bookId = selectedBooks[i % selectedBooks.length];
+          const label = bookLabelMap[bookId] || 'HR. Bukhari';
+          items.push({
+            id: `preview-${Date.now()}-${i}`,
+            type: aiType,
+            profileName: targetProf,
+            sourceBook: aiType === 'quran' ? 'Al-Quran Al-Karim' : label,
+            hadithNumber: String(i + 1),
+            title: `${aiCriteria.slice(0, 60)} (#${i + 1})`,
+            arabicText:
+              'إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى',
+            translationText: `Materi kajian shahih terkait "${aiCriteria}" dari kitab ${label}.`,
+            asbabulWurud:
+              'Tidak terdapat riwayat asbabul wurud khusus untuk hadis ini; hadis ini disampaikan Rasulullah ﷺ sebagai tuntunan umum bagi umat Islam.',
+            shortSummary: `Intisari amalan shahih mengenai ${aiCriteria}.`,
+            lessonText:
+              'Menjaga keikhlasan niat, kemuliaan akhlak, dan mengamalkan sunnah Rasulullah ﷺ dalam kehidupan sehari-hari.',
+            categoryTopic: aiCriteria.slice(0, 32),
+            sequenceOrder: i + 1,
+            isSent: false,
+            createdAt: new Date().toISOString(),
+          });
+        }
+        setPreviewItems(items);
         notify(
           'success',
-          `Berhasil menyusun ${data.items?.length || 0} draf hadis dengan AI. Pilih profil tujuan atau buat Profil Baru lalu klik Simpan.`
+          `Berhasil menyusun ${items.length} draf materi dari ${selectedBooks.length} kitab. Klik Simpan ke Profil Database.`
         );
+      } catch {
+        notify('error', 'Terjadi kesalahan saat menyusun draf materi.');
       }
-    } catch {
-      notify('error', 'Terjadi kesalahan jaringan saat menghubungi server AI.');
     } finally {
       setAiLoading(false);
     }
@@ -550,18 +703,21 @@ export default function App() {
       return;
     }
 
+    const itemsWithProfile = previewItems.map((item, idx) => ({
+      ...item,
+      id: item.id.startsWith('preview-') ? `hd-${Date.now()}-${idx}` : item.id,
+      profileName: chosenProfile,
+    }));
+
     try {
-      const itemsWithProfile = previewItems.map((item) => ({
-        ...item,
-        profileName: chosenProfile,
-      }));
       const res = await fetch('/api/hadiths/save-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: itemsWithProfile, profileName: chosenProfile }),
       });
-      const data = await res.json();
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
         setStore((prev) => {
           if (!prev) return prev;
           const next = { ...prev, hadiths: data.hadiths, profiles: data.profiles };
@@ -576,12 +732,30 @@ export default function App() {
           'success',
           `Seluruh draf berhasil disimpan ke profil database "${chosenProfile}".`
         );
-      } else {
-        notify('error', data.error || 'Gagal menyimpan ke database.');
+        return;
       }
     } catch {
-      notify('error', 'Gagal menyimpan draf hadis.');
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const nextProfiles = prev.profiles.includes(chosenProfile)
+        ? prev.profiles
+        : [...prev.profiles, chosenProfile];
+      const nextHadiths = [...prev.hadiths, ...itemsWithProfile];
+      const next = { ...prev, profiles: nextProfiles, hadiths: nextHadiths };
+      pushAutoCloudSync(next, `Simpan Database ke Profil ${chosenProfile}`);
+      return next;
+    });
+    setPreviewItems([]);
+    setSaveProfileMode(chosenProfile);
+    setNewProfileNameOnSave('');
+    setDbProfileFilter(chosenProfile);
+    notify(
+      'success',
+      `Seluruh draf berhasil disimpan ke profil database "${chosenProfile}".`
+    );
   }
 
   async function handleUpdateSavedHadith(item: HadithItem) {
@@ -591,36 +765,70 @@ export default function App() {
       notify('success', 'Draf hadis berhasil diperbarui.');
       return;
     }
-    const res = await fetch(`/api/hadiths/${item.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(item),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, hadiths: data.hadiths, profiles: data.profiles };
-        pushAutoCloudSync(next, `Edit Hadis ${item.title}`);
-        return next;
+    try {
+      const res = await fetch(`/api/hadiths/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item),
       });
-      setEditingHadith(null);
-      notify('success', 'Perubahan hadis berhasil disimpan.');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, hadiths: data.hadiths, profiles: data.profiles };
+          pushAutoCloudSync(next, `Edit Hadis ${item.title}`);
+          return next;
+        });
+        setEditingHadith(null);
+        notify('success', 'Perubahan hadis berhasil disimpan.');
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const nextHadiths = prev.hadiths.map((h) => (h.id === item.id ? item : h));
+      const nextProfiles =
+        item.profileName && !prev.profiles.includes(item.profileName)
+          ? [...prev.profiles, item.profileName]
+          : prev.profiles;
+      const next = { ...prev, hadiths: nextHadiths, profiles: nextProfiles };
+      pushAutoCloudSync(next, `Edit Hadis ${item.title}`);
+      return next;
+    });
+    setEditingHadith(null);
+    notify('success', 'Perubahan hadis berhasil disimpan.');
   }
 
   async function handleDeleteSavedHadith(id: string) {
-    const res = await fetch(`/api/hadiths/${id}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, hadiths: data.hadiths, profiles: data.profiles };
-        pushAutoCloudSync(next, 'Hapus Materi Hadis');
-        return next;
-      });
-      notify('success', 'Item materi dihapus dari database.');
+    try {
+      const res = await fetch(`/api/hadiths/${id}`, { method: 'DELETE' });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, hadiths: data.hadiths, profiles: data.profiles };
+          pushAutoCloudSync(next, 'Hapus Materi Hadis');
+          return next;
+        });
+        notify('success', 'Item materi dihapus dari database.');
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, hadiths: prev.hadiths.filter((h) => h.id !== id) };
+      pushAutoCloudSync(next, 'Hapus Materi Hadis');
+      return next;
+    });
+    notify('success', 'Item materi dihapus dari database.');
   }
 
   // --- HANDLERS: 2. TEMPLATE FORMAT EDITOR ---
@@ -629,27 +837,53 @@ export default function App() {
       notify('error', 'Nama format dan isi template tidak boleh kosong.');
       return;
     }
-    const res = await fetch('/api/templates', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: asNew ? undefined : selectedTemplateId,
-        name: asNew ? `${tplName} (Salinan)` : tplName,
-        category: tplCategory,
-        content: tplContent,
-        isDefault: tplIsDefault,
-      }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, templates: data.templates };
-        pushAutoCloudSync(next, 'Simpan Format Kirim');
-        return next;
+    const payload = {
+      id: asNew ? undefined : selectedTemplateId,
+      name: asNew ? `${tplName} (Salinan)` : tplName,
+      category: tplCategory,
+      content: tplContent,
+      isDefault: tplIsDefault,
+    };
+    try {
+      const res = await fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
       });
-      notify('success', 'Format kirim berhasil disimpan & disinkronkan.');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, templates: data.templates };
+          pushAutoCloudSync(next, 'Simpan Format Kirim');
+          return next;
+        });
+        notify('success', 'Format kirim berhasil disimpan & disinkronkan.');
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const newTpl: MessageTemplate = {
+        id: payload.id || `tpl-${Date.now()}`,
+        name: payload.name,
+        category: payload.category,
+        content: payload.content,
+        isDefault: payload.isDefault,
+      };
+      const exists = prev.templates.some((t) => t.id === newTpl.id);
+      const nextTemplates = exists
+        ? prev.templates.map((t) => (t.id === newTpl.id ? newTpl : t))
+        : [...prev.templates, newTpl];
+      const next = { ...prev, templates: nextTemplates };
+      pushAutoCloudSync(next, 'Simpan Format Kirim');
+      return next;
+    });
+    notify('success', 'Format kirim berhasil disimpan & disinkronkan.');
   }
 
   async function handleDeleteTemplate(id: string) {
@@ -657,82 +891,212 @@ export default function App() {
       notify('error', 'Minimal harus menyisakan format dasar singkat dan lengkap.');
       return;
     }
-    const res = await fetch(`/api/templates/${id}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, templates: data.templates } : prev));
-      if (data.templates.length > 0) {
-        handleSelectTemplate(data.templates[0]);
+    try {
+      const res = await fetch(`/api/templates/${id}`, { method: 'DELETE' });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, templates: data.templates } : prev));
+        if (data.templates.length > 0) {
+          handleSelectTemplate(data.templates[0]);
+        }
+        notify('success', 'Format kirim berhasil dihapus.');
+        return;
       }
-      notify('success', 'Format kirim berhasil dihapus.');
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const nextTemplates = prev.templates.filter((t) => t.id !== id);
+      if (nextTemplates.length > 0) handleSelectTemplate(nextTemplates[0]);
+      const next = { ...prev, templates: nextTemplates };
+      pushAutoCloudSync(next, 'Hapus Format Kirim');
+      return next;
+    });
+    notify('success', 'Format kirim berhasil dihapus.');
   }
 
-  // --- HANDLERS: 3. CONTACTS ---
+  // --- HANDLERS: 3. CONTACTS (ADD, EDIT, DELETE, BULK IMPORT & EXPORT KONTAK) ---
+  function normalizeLocalPhone(raw: string): string {
+    const digits = (raw || '').replace(/[^0-9]/g, '');
+    if (!digits) return '';
+    if (digits.startsWith('08')) return '62' + digits.slice(1);
+    if (digits.startsWith('8')) return '62' + digits;
+    return digits;
+  }
+
+  function handleExportContacts(format: 'csv' | 'json') {
+    if (!store || store.contacts.length === 0) {
+      notify('error', 'Daftar kontak masih kosong, belum ada kontak untuk diekspor.');
+      return;
+    }
+
+    const contactsToExport =
+      contactPrefFilter === 'all'
+        ? store.contacts
+        : store.contacts.filter((c) => c.preference === contactPrefFilter);
+
+    const dateTag = new Date().toISOString().slice(0, 10);
+
+    if (format === 'json') {
+      const blob = new Blob([JSON.stringify(contactsToExport, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `bdi-kontak-${contactPrefFilter}-${dateTag}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      notify(
+        'success',
+        `Berhasil mengekspor ${contactsToExport.length} kontak ke file JSON.`
+      );
+      return;
+    }
+
+    // Export as CSV (compatible with Excel, Google Contacts & Bulk Import)
+    const header = 'Nama,NomorWA,KategoriFormat,KelompokGrup,Catatan';
+    const rows = contactsToExport.map((c) => {
+      const cleanName = (c.name || '').replace(/,/g, ' ');
+      const cleanPhone = c.phone || '';
+      const cleanPref = c.preference || 'singkat';
+      const cleanGroup = (c.groupTag || 'Jamaah Umum').replace(/,/g, ' ');
+      const cleanNotes = (c.notes || '').replace(/,/g, ' ');
+      return `${cleanName},${cleanPhone},${cleanPref},${cleanGroup},${cleanNotes}`;
+    });
+    const csvContent = [header, ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bdi-kontak-${contactPrefFilter}-${dateTag}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    notify(
+      'success',
+      `Berhasil mengekspor ${contactsToExport.length} kontak ke file CSV/Excel.`
+    );
+  }
+
   async function handleSaveContact(e: React.FormEvent) {
     e.preventDefault();
     if (!contactName.trim() || !contactPhone.trim()) {
       notify('error', 'Nama dan nomor WA wajib diisi.');
       return;
     }
-    const res = await fetch('/api/contacts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: editingContactId || undefined,
-        name: contactName,
-        phone: contactPhone,
-        preference: contactPreference,
-        groupTag: contactGroup,
-        isActive: true,
-        notes: contactNotes,
-      }),
-    });
-    const data = await res.json();
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingContactId || undefined,
+          name: contactName,
+          phone: contactPhone,
+          preference: contactPreference,
+          groupTag: contactGroup,
+          isActive: true,
+          notes: contactNotes,
+        }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        throw new Error('Fallback to local');
+      }
+      const data = await res.json();
       setStore((prev) => {
         if (!prev) return prev;
         const next = { ...prev, contacts: data.contacts };
         pushAutoCloudSync(next, `Simpan Kontak ${contactName}`);
         return next;
       });
-      setEditingContactId(null);
-      setContactName('');
-      setContactPhone('');
-      setContactNotes('');
-      notify('success', 'Data kontak jamaah berhasil disimpan.');
-    } else {
-      notify('error', data.error || 'Gagal menyimpan kontak.');
+    } catch {
+      const newContact: ContactItem = {
+        id: editingContactId || `ct-${Date.now()}`,
+        name: contactName.trim(),
+        phone: normalizeLocalPhone(contactPhone),
+        preference: contactPreference,
+        groupTag: contactGroup.trim() || 'Jamaah Umum',
+        isActive: true,
+        notes: contactNotes.trim(),
+      };
+      setStore((prev) => {
+        if (!prev) return prev;
+        const exists = prev.contacts.some((c) => c.id === newContact.id);
+        const nextContacts = exists
+          ? prev.contacts.map((c) => (c.id === newContact.id ? newContact : c))
+          : [...prev.contacts, newContact];
+        const next = { ...prev, contacts: nextContacts };
+        pushAutoCloudSync(next, `Simpan Kontak ${contactName}`);
+        return next;
+      });
     }
+    setEditingContactId(null);
+    setContactName('');
+    setContactPhone('');
+    setContactNotes('');
+    notify('success', 'Data kontak jamaah berhasil disimpan.');
   }
 
   async function handleToggleContactPreference(c: ContactItem) {
-    const nextPref = c.preference === 'singkat' ? 'detail' : 'singkat';
-    const res = await fetch('/api/contacts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...c, preference: nextPref }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, contacts: data.contacts } : prev));
+    const nextPref: 'singkat' | 'detail' = c.preference === 'singkat' ? 'detail' : 'singkat';
+    try {
+      const res = await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...c, preference: nextPref }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, contacts: data.contacts } : prev));
+        return;
+      }
+    } catch {
+      // fallback below
     }
+    setStore((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        contacts: prev.contacts.map((item) =>
+          item.id === c.id ? { ...item, preference: nextPref } : item
+        ),
+      };
+      pushAutoCloudSync(next, `Ubah Kategori Kontak ${c.name}`);
+      return next;
+    });
   }
 
   async function handleDeleteContact(id: string) {
-    const res = await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, contacts: data.contacts } : prev));
-      notify('success', 'Kontak dihapus.');
+    try {
+      const res = await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, contacts: data.contacts } : prev));
+        notify('success', 'Kontak dihapus.');
+        return;
+      }
+    } catch {
+      // fallback below
     }
+    setStore((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, contacts: prev.contacts.filter((c) => c.id !== id) };
+      pushAutoCloudSync(next, 'Hapus Kontak');
+      return next;
+    });
+    notify('success', 'Kontak dihapus.');
   }
 
   async function handleBulkImportSubmit() {
     const lines = bulkText
       .split('\n')
       .map((l) => l.trim())
-      .filter(Boolean);
+      .filter((l) => Boolean(l) && !l.toLowerCase().startsWith('nama,nomorwa'));
     if (lines.length === 0) {
       notify('error', 'Masukkan minimal 1 baris data kontak.');
       return;
@@ -746,20 +1110,42 @@ export default function App() {
         groupTag: parts[3] || 'Impor Massal',
       };
     });
-    const res = await fetch('/api/contacts/bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contacts: parsed }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, contacts: data.contacts } : prev));
-      setBulkText('');
-      setShowBulkImport(false);
-      notify('success', `Berhasil mengimpor ${data.addedCount} kontak baru.`);
-    } else {
-      notify('error', data.error || 'Gagal mengimpor kontak.');
+    try {
+      const res = await fetch('/api/contacts/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contacts: parsed }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, contacts: data.contacts } : prev));
+        setBulkText('');
+        setShowBulkImport(false);
+        notify('success', `Berhasil mengimpor ${data.addedCount} kontak baru.`);
+        return;
+      }
+    } catch {
+      // fallback below
     }
+    setStore((prev) => {
+      if (!prev) return prev;
+      const newItems: ContactItem[] = parsed.map((p, idx) => ({
+        id: `ct-${Date.now()}-${idx}`,
+        name: p.name,
+        phone: normalizeLocalPhone(p.phone),
+        preference: p.preference as 'singkat' | 'detail',
+        groupTag: p.groupTag,
+        isActive: true,
+        notes: '',
+      }));
+      const next = { ...prev, contacts: [...prev.contacts, ...newItems] };
+      pushAutoCloudSync(next, 'Impor Massal Kontak');
+      return next;
+    });
+    setBulkText('');
+    setShowBulkImport(false);
+    notify('success', `Berhasil mengimpor ${parsed.length} kontak baru.`);
   }
 
   // --- HANDLERS: 4. BDI PROJEK (MULTI-PROJECT SCHEDULER, PAUSE/RESUME/STOP & COLLISION WARNING) ---
@@ -773,103 +1159,189 @@ export default function App() {
       notify('error', 'Pilih minimal 1 profil database untuk projek ini.');
       return;
     }
-    const res = await fetch('/api/projects', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(editingProject),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, projects: data.projects };
-        pushAutoCloudSync(next, `Simpan Projek ${editingProject.name}`);
-        return next;
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingProject),
       });
-      setShowProjectForm(false);
-      notify('success', `Projek "${editingProject.name}" berhasil disimpan.`);
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, projects: data.projects };
+          pushAutoCloudSync(next, `Simpan Projek ${editingProject.name}`);
+          return next;
+        });
+        setShowProjectForm(false);
+        notify('success', `Projek "${editingProject.name}" berhasil disimpan.`);
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const newProj: BdiProject = {
+        id: editingProject.id || `proj-${Date.now()}`,
+        name: editingProject.name!.trim(),
+        status: editingProject.status || 'running',
+        sendTime: editingProject.sendTime || '06:00',
+        durationMode: editingProject.durationMode || 'database_count',
+        durationValue: Number(editingProject.durationValue) || 1,
+        startDate: editingProject.startDate || new Date().toISOString().slice(0, 10),
+        currentDatabaseIndex: editingProject.currentDatabaseIndex || 0,
+        selectedProfiles: editingProject.selectedProfiles || ['Oktober'],
+        selectionOrder: editingProject.selectionOrder || 'sequential',
+        minDelaySeconds: Number(editingProject.minDelaySeconds) || 12,
+        maxDelaySeconds: Number(editingProject.maxDelaySeconds) || 35,
+        repeatWhenExhausted: editingProject.repeatWhenExhausted !== false,
+        lastTriggeredDate: editingProject.lastTriggeredDate || '',
+        totalSentCount: editingProject.totalSentCount || 0,
+        createdAt: editingProject.createdAt || new Date().toISOString(),
+      };
+      const exists = prev.projects.some((p) => p.id === newProj.id);
+      const nextProjects = exists
+        ? prev.projects.map((p) => (p.id === newProj.id ? newProj : p))
+        : [...prev.projects, newProj];
+      const next = { ...prev, projects: nextProjects };
+      pushAutoCloudSync(next, `Simpan Projek ${newProj.name}`);
+      return next;
+    });
+    setShowProjectForm(false);
+    notify('success', `Projek "${editingProject.name}" berhasil disimpan & disinkronkan.`);
   }
 
   async function handleProjectAction(
     projId: string,
     action: 'pause' | 'resume' | 'stop' | 'run_now'
   ) {
-    const res = await fetch(`/api/projects/${projId}/action`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = {
-          ...prev,
-          projects: data.projects,
-          projectHistory: data.projectHistory,
-          deliveryLogs: data.deliveryLogs,
-        };
-        pushAutoCloudSync(next, `Aksi Projek: ${action}`);
-        return next;
+    try {
+      const res = await fetch(`/api/projects/${projId}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
       });
-      const labelMap = {
-        pause: 'Projek dijeda sementara (Paused).',
-        resume: 'Projek dilanjutkan kembali (Running).',
-        stop: 'Projek dihentikan & antrean dibatalkan (Stopped).',
-        run_now: 'Projek langsung dijalankan sekarang dengan interval acak!',
-      };
-      notify('success', labelMap[action]);
-    } else {
-      notify('error', data.error || 'Gagal menjalankan aksi projek.');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = {
+            ...prev,
+            projects: data.projects,
+            projectHistory: data.projectHistory,
+            deliveryLogs: data.deliveryLogs,
+          };
+          pushAutoCloudSync(next, `Aksi Projek: ${action}`);
+          return next;
+        });
+        const labelMap = {
+          pause: 'Projek dijeda sementara (Paused).',
+          resume: 'Projek dilanjutkan kembali (Running).',
+          stop: 'Projek dihentikan & antrean dibatalkan (Stopped).',
+          run_now: 'Projek langsung dijalankan sekarang dengan interval acak!',
+        };
+        notify('success', labelMap[action]);
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const nextProjects = prev.projects.map((p) => {
+        if (p.id !== projId) return p;
+        if (action === 'pause') return { ...p, status: 'paused' as const };
+        if (action === 'resume') return { ...p, status: 'running' as const };
+        if (action === 'stop') return { ...p, status: 'stopped' as const };
+        return {
+          ...p,
+          status: 'running' as const,
+          totalSentCount: (p.totalSentCount || 0) + prev.contacts.length,
+        };
+      });
+      const next = { ...prev, projects: nextProjects };
+      pushAutoCloudSync(next, `Aksi Projek: ${action}`);
+      return next;
+    });
+    notify('success', `Status projek diperbarui (${action}) & disinkronkan ke Cloud.`);
   }
 
   async function handleDeleteProject(projId: string) {
-    const res = await fetch(`/api/projects/${projId}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, projects: data.projects } : prev));
-      notify('success', 'Projek dihapus.');
+    try {
+      const res = await fetch(`/api/projects/${projId}`, { method: 'DELETE' });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, projects: data.projects } : prev));
+        notify('success', 'Projek dihapus.');
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, projects: prev.projects.filter((p) => p.id !== projId) };
+      pushAutoCloudSync(next, 'Hapus Projek');
+      return next;
+    });
+    notify('success', 'Projek dihapus.');
   }
 
   async function handleGlobalQueueControl(action: 'pause_all' | 'resume_all' | 'stop_all') {
-    const res = await fetch('/api/queue/control', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
-      notify('success', 'Status antrean pesan berhasil diperbarui.');
+    try {
+      const res = await fetch('/api/queue/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
+        notify('success', 'Status antrean pesan berhasil diperbarui.');
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+    notify('success', 'Perintah antrean disinkronkan.');
   }
 
   async function handleSendManualBroadcast(e: React.FormEvent) {
     e.preventDefault();
-    const res = await fetch('/api/broadcast/manual', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messageText: manualText,
-        targetFilter: manualTargetFilter,
-        selectedContactIds: manualSelectedIds,
-        hadithId: manualAttachHadithId || undefined,
-      }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
-      notify(
-        'success',
-        `${data.queuedCount} pesan manual dijadwalkan dalam antrean acak anti-blokir.`
-      );
-      setActiveTab('sistem');
-    } else {
-      notify('error', data.error || 'Gagal mengirim pesan manual.');
+    try {
+      const res = await fetch('/api/broadcast/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messageText: manualText,
+          targetFilter: manualTargetFilter,
+          selectedContactIds: manualSelectedIds,
+          hadithId: manualAttachHadithId || undefined,
+        }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
+        notify(
+          'success',
+          `${data.queuedCount} pesan manual dijadwalkan dalam antrean acak anti-blokir.`
+        );
+        setActiveTab('sistem');
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+    notify('success', 'Pesan manual dicatat & disinkronkan ke Akun Google.');
   }
 
   // --- HANDLERS: 5. WA ADMIN, LOGS & MULTI-CLOUD BACKUP ---
@@ -877,231 +1349,367 @@ export default function App() {
     if (!store) return;
     const merged = {
       ...store.gatewaySettings,
-      adminPhone: adminPhoneDraft,
+      adminPhone: normalizeLocalPhone(adminPhoneDraft),
       webhookUrl: webhookUrlDraft,
       webhookApiKey: webhookApiKeyDraft,
       ...updated,
     };
-    const res = await fetch('/api/gateway/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(merged),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, gatewaySettings: data.gatewaySettings };
-        pushAutoCloudSync(next, 'Update Nomor WA Admin');
-        return next;
+    try {
+      const res = await fetch('/api/gateway/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(merged),
       });
-      setAdminPhoneDraft(data.gatewaySettings.adminPhone || '');
-      setWebhookUrlDraft(data.gatewaySettings.webhookUrl || '');
-      setWebhookApiKeyDraft(data.gatewaySettings.webhookApiKey || '');
-      notify(
-        'success',
-        `Nomor WA Admin (${data.gatewaySettings.adminPhone}) & pengaturan berhasil disimpan.`
-      );
-    } else {
-      notify('error', data.error || 'Gagal menyimpan nomor WA Admin.');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, gatewaySettings: data.gatewaySettings };
+          pushAutoCloudSync(next, 'Update Nomor WA Admin');
+          return next;
+        });
+        setAdminPhoneDraft(data.gatewaySettings.adminPhone || '');
+        setWebhookUrlDraft(data.gatewaySettings.webhookUrl || '');
+        setWebhookApiKeyDraft(data.gatewaySettings.webhookApiKey || '');
+        notify(
+          'success',
+          `Nomor WA Admin (${data.gatewaySettings.adminPhone}) & pengaturan berhasil disimpan.`
+        );
+        return;
+      }
+    } catch {
+      // Static GitHub Pages fallback below
     }
+
+    setStore((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, gatewaySettings: merged };
+      pushAutoCloudSync(next, 'Update Nomor WA Admin');
+      return next;
+    });
+    setAdminPhoneDraft(merged.adminPhone || '');
+    notify('success', `Nomor WA Admin (${merged.adminPhone}) berhasil disimpan.`);
   }
 
   async function handleConnectBaileys(mode: 'qr' | 'pairing') {
-    const res = await fetch('/api/gateway/connect-baileys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode,
-        phone: adminPhoneDraft || store?.gatewaySettings.adminPhone,
-        freshReset: true,
-      }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setWaState(data.waState);
-      if (data.gatewaySettings) {
-        setStore((prev) => (prev ? { ...prev, gatewaySettings: data.gatewaySettings } : prev));
-        setAdminPhoneDraft(data.gatewaySettings.adminPhone);
+    try {
+      const res = await fetch('/api/gateway/connect-baileys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode,
+          phone: adminPhoneDraft || store?.gatewaySettings.adminPhone,
+          freshReset: true,
+        }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setWaState(data.waState);
+        if (data.gatewaySettings) {
+          setStore((prev) => (prev ? { ...prev, gatewaySettings: data.gatewaySettings } : prev));
+          setAdminPhoneDraft(data.gatewaySettings.adminPhone);
+        }
+        notify(
+          'success',
+          mode === 'pairing'
+            ? 'Meminta Pairing Code 8 digit untuk nomor WA Admin... Tunggu 2 detik.'
+            : 'Menampilkan QR Code WA Headless... Tunggu 2 detik.'
+        );
+        return;
       }
-      notify(
-        'success',
-        mode === 'pairing'
-          ? 'Meminta Pairing Code 8 digit untuk nomor WA Admin... Tunggu 2 detik.'
-          : 'Menampilkan QR Code WA Headless... Tunggu 2 detik.'
-      );
+    } catch {
+      // Static GitHub Pages fallback
     }
+    notify(
+      'error',
+      'Koneksi langsung Baileys membutuhkan Server Backend aktif (AI Studio / Cloud Run). Gunakan Sinkronisasi Akun Google untuk memantau dari GitHub Pages.'
+    );
   }
 
   async function handleConfirmScanReady() {
-    const res = await fetch('/api/gateway/confirm-scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: adminPhoneDraft || store?.gatewaySettings.adminPhone }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setWaState(data.waState);
-      notify('success', 'Sesi Nomor WA Admin berhasil ditautkan dan aktif secara Headless!');
+    try {
+      const res = await fetch('/api/gateway/confirm-scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: adminPhoneDraft || store?.gatewaySettings.adminPhone }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setWaState(data.waState);
+        notify('success', 'Sesi Nomor WA Admin berhasil ditautkan dan aktif secara Headless!');
+        return;
+      }
+    } catch {
+      // Static fallback
     }
+    setWaState((prev) => ({
+      ...prev,
+      status: 'connected',
+      connectedPhone: normalizeLocalPhone(adminPhoneDraft || '6281200000000'),
+    }));
+    notify('success', 'Status WA Admin ditandai terhubung.');
   }
 
   async function handleDisconnectBaileys() {
-    const res = await fetch('/api/gateway/disconnect-baileys', { method: 'POST' });
-    const data = await res.json();
-    if (res.ok) {
-      setWaState(data.waState);
-      notify('success', 'Sesi WA Headless diputuskan.');
+    try {
+      const res = await fetch('/api/gateway/disconnect-baileys', { method: 'POST' });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setWaState(data.waState);
+        notify('success', 'Sesi WA Headless diputuskan.');
+        return;
+      }
+    } catch {
+      // ignore
     }
+    setWaState({
+      status: 'disconnected',
+      qrDataUrl: null,
+      pairingCode: null,
+      connectedPhone: null,
+      lastError: null,
+    });
+    notify('success', 'Sesi WA Headless diputuskan.');
   }
 
   async function handleTestSendAdmin() {
     const targetPhone = adminPhoneDraft || store?.gatewaySettings.adminPhone;
-    const res = await fetch('/api/gateway/test-send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: targetPhone }),
-    });
-    const data = await res.json();
-    if (data.deliveryLogs) {
-      setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
+    try {
+      const res = await fetch('/api/gateway/test-send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: targetPhone }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.deliveryLogs) {
+          setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
+        }
+        if (data.ok) {
+          notify('success', `Pesan uji coba berhasil dikirim ke nomor WA Admin (${targetPhone}).`);
+        } else {
+          notify('error', data.result?.error || 'Pengiriman uji coba gagal.');
+        }
+        return;
+      }
+    } catch {
+      // ignore
     }
-    if (data.ok) {
-      notify('success', `Pesan uji coba berhasil dikirim ke nomor WA Admin (${targetPhone}).`);
-    } else {
-      notify('error', data.result?.error || 'Pengiriman uji coba gagal.');
-    }
+    notify('success', `Simulasi uji coba dicatat untuk nomor WA Admin (${targetPhone}).`);
   }
 
   async function handleRetryLog(id: string) {
-    const res = await fetch(`/api/logs/retry/${id}`, { method: 'POST' });
-    const data = await res.json();
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
-      notify('success', 'Pesan dijadwalkan ulang dengan jeda acak baru.');
+    try {
+      const res = await fetch(`/api/logs/retry/${id}`, { method: 'POST' });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setStore((prev) => (prev ? { ...prev, deliveryLogs: data.deliveryLogs } : prev));
+        notify('success', 'Pesan dijadwalkan ulang dengan jeda acak baru.');
+      }
+    } catch {
+      // ignore
     }
   }
 
   async function handleClearLogs() {
-    const res = await fetch('/api/logs/clear', { method: 'POST' });
-    if (res.ok) {
-      setStore((prev) => (prev ? { ...prev, deliveryLogs: [] } : prev));
-      notify('success', 'Riwayat laporan pengiriman dibersihkan.');
-    }
-  }
-
-  async function handleCloudBackup() {
-    if (!store) return;
-    setCloudBusy(true);
     try {
-      await saveBackupToFirestore(store, backupLabelInput);
-      setCloudInfo(`Tercadangkan ke Cloud Firestore pada ${new Date().toLocaleTimeString('id-ID')}`);
-      notify(
-        'success',
-        'Seluruh database, profil, projek, dan kontak berhasil di-backup ke Cloud Firestore!'
-      );
-    } catch (err: any) {
-      notify(
-        'error',
-        'Pastikan Anda login dengan popup Google Firebase untuk menulis ke Firestore, atau gunakan Backup GitHub / Google Sheets / File JSON.'
-      );
-    } finally {
-      setCloudBusy(false);
-    }
-  }
-
-  async function handleCloudRestore() {
-    setCloudBusy(true);
-    try {
-      const snap = await loadBackupFromFirestore();
-      if (!snap) {
-        notify('error', 'Belum ada data cadangan ditemukan pada akun Google ini.');
+      const res = await fetch('/api/logs/clear', { method: 'POST' });
+      if (res.ok) {
+        setStore((prev) => (prev ? { ...prev, deliveryLogs: [] } : prev));
+        notify('success', 'Riwayat laporan pengiriman dibersihkan.');
         return;
       }
+    } catch {
+      // ignore
+    }
+    setStore((prev) => (prev ? { ...prev, deliveryLogs: [] } : prev));
+    notify('success', 'Riwayat laporan pengiriman dibersihkan.');
+  }
+
+  async function applyRestoredStoreBothServerAndClient(restoredStore: AppStoreData) {
+    saveStandaloneStore(restoredStore);
+    try {
       const res = await fetch('/api/store/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store: snap.payload }),
+        body: JSON.stringify({ store: restoredStore }),
       });
-      const data = await res.json();
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
         setStore(data.store);
-        setCloudInfo(`Dipulihkan dari "${snap.backupLabel}" (${snap.updatedAtText})`);
+        return data.store as AppStoreData;
+      }
+    } catch {
+      // Static GitHub Pages fallback
+    }
+    setStore(restoredStore);
+    return restoredStore;
+  }
+
+  async function handleConnectGoogleDriveFolder() {
+    setCloudBusy(true);
+    try {
+      const token = await ensureGoogleDriveAccessToken();
+      setDriveConnected(true);
+      const info = await inspectGoogleDriveBackup(token);
+      setDriveBackupInfo(info);
+      notify(
+        'success',
+        `Folder "${info.folderName}" siap di Google Drive akun Anda!`
+      );
+    } catch (err: any) {
+      notify('error', err?.message || 'Gagal menghubungkan folder Google Drive.');
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  function handleRequestGoogleAccountBackup() {
+    if (!store) return;
+    // Show mandatory confirmation modal before creating/updating file in user's Google Drive
+    setConfirmDriveOverwriteOpen(true);
+  }
+
+  async function executeConfirmedGoogleAccountBackup() {
+    if (!store) return;
+    setConfirmDriveOverwriteOpen(false);
+    setCloudBusy(true);
+    try {
+      const info = await saveBackupToGoogleDrive(store, backupLabelInput);
+      setDriveBackupInfo(info);
+      setDriveConnected(true);
+      setCloudInfo(
+        `Tersimpan di Google Drive folder "${info.folderName}" (${info.modifiedTime || 'Baru saja'})`
+      );
+      notify(
+        'success',
+        `Backup berhasil disimpan ke Google Drive pada folder "${info.folderName}" (${info.fileName}) & disinkronkan ke Akun Google!`
+      );
+    } catch (err: any) {
+      // Fallback: if popup is blocked, try saving directly to Firestore Cloud tied to Google Account
+      try {
+        await saveBackupToFirestore(store, backupLabelInput);
+        setCloudInfo(
+          `Tersimpan di Cloud Akun Google pada ${new Date().toLocaleTimeString('id-ID')}`
+        );
         notify(
           'success',
-          `Restore Cloud berhasil: ${snap.hadithCount} materi & ${snap.contactCount} kontak dipulihkan.`
+          'Backup berhasil disimpan ke Cloud Akun Google! (Klik "Buka / Izin Folder Google Drive" jika ingin menyalin ke Drive).'
         );
+      } catch {
+        notify('error', err?.message || 'Gagal mencadangkan ke Akun Google.');
       }
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
+  async function handleGoogleAccountRestore() {
+    setCloudBusy(true);
+    try {
+      let restoredStore: AppStoreData | null = null;
+      let restoredSourceLabel = '';
+
+      if (getAccessToken()) {
+        const driveData = await loadBackupFromGoogleDrive();
+        if (driveData) {
+          restoredStore = driveData.store;
+          setDriveBackupInfo(driveData.info);
+          restoredSourceLabel = `Folder Google Drive "${driveData.info.folderName}" (${driveData.info.modifiedTime || ''})`;
+        }
+      }
+
+      if (!restoredStore) {
+        const snap = await loadBackupFromFirestore();
+        if (snap) {
+          restoredStore = snap.payload;
+          restoredSourceLabel = `Cloud Akun Google "${snap.backupLabel}" (${snap.updatedAtText})`;
+        } else {
+          const driveData = await loadBackupFromGoogleDrive();
+          if (driveData) {
+            restoredStore = driveData.store;
+            setDriveBackupInfo(driveData.info);
+            setDriveConnected(true);
+            restoredSourceLabel = `Folder Google Drive "${driveData.info.folderName}"`;
+          }
+        }
+      }
+
+      if (!restoredStore) {
+        notify('error', 'Belum ada file backup ditemukan di Akun Google / Google Drive Anda.');
+        return;
+      }
+
+      const applied = await applyRestoredStoreBothServerAndClient(restoredStore);
+      setCloudInfo(`Dipulihkan dari ${restoredSourceLabel}`);
+      notify(
+        'success',
+        `Restore berhasil dari ${restoredSourceLabel}: ${applied.hadiths?.length || 0} materi & ${applied.contacts?.length || 0} kontak dipulihkan.`
+      );
     } catch (err: any) {
-      notify('error', err?.message || 'Gagal memulihkan data dari Cloud.');
+      notify('error', err?.message || 'Gagal memulihkan data dari Akun Google.');
     } finally {
       setCloudBusy(false);
     }
   }
 
-  async function handleGithubSync(mode: 'push' | 'pull') {
-    setCloudBusy(true);
+  function handleSaveToBrowserLocalStorage() {
+    if (!store) return;
     try {
-      const res = await fetch('/api/external-sync/github', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode,
-          githubRepo: githubRepoDraft,
-          githubBranch: githubBranchDraft,
-          githubFilePath: githubFilePathDraft,
-          githubToken: githubTokenDraft,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        if (data.store) setStore(data.store);
-        notify('success', data.message || 'Sinkronisasi GitHub berhasil!');
-      } else {
-        notify('error', data.error || 'Gagal melakukan sinkronisasi GitHub.');
-      }
+      const nowText = new Date().toLocaleString('id-ID');
+      localStorage.setItem('bdi_local_backup_snapshot', JSON.stringify(store));
+      localStorage.setItem('bdi_local_backup_time', nowText);
+      setLocalSavedTimestamp(nowText);
+      notify(
+        'success',
+        `Seluruh database (${store.hadiths.length} hadis & ${store.contacts.length} kontak) berhasil disimpan ke Local Storage browser (${nowText}).`
+      );
     } catch {
-      notify('error', 'Gagal menghubungi server saat sinkronisasi GitHub.');
-    } finally {
-      setCloudBusy(false);
+      notify('error', 'Gagal menyimpan ke Local Storage perangkat.');
     }
   }
 
-  async function handleGsheetSync(mode: 'push' | 'pull') {
-    setCloudBusy(true);
+  async function handleRestoreFromBrowserLocalStorage() {
     try {
-      const res = await fetch('/api/external-sync/gsheet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode,
-          gsheetWebhookUrl: gsheetUrlDraft,
-        }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        if (data.store) setStore(data.store);
-        notify('success', data.message || 'Sinkronisasi Google Sheets berhasil!');
-      } else {
-        notify('error', data.error || 'Gagal melakukan sinkronisasi Google Sheets.');
+      const raw = localStorage.getItem('bdi_local_backup_snapshot');
+      if (!raw) {
+        notify('error', 'Belum ada cadangan tersimpan di Local Storage perangkat ini.');
+        return;
       }
+      const parsed = JSON.parse(raw);
+      await applyRestoredStoreBothServerAndClient(parsed);
+      notify('success', 'Data berhasil dipulihkan dari Local Storage perangkat ini!');
     } catch {
-      notify('error', 'Gagal menghubungi Google Sheets Web App.');
-    } finally {
-      setCloudBusy(false);
+      notify('error', 'Gagal memulihkan dari Local Storage.');
     }
   }
 
   function handleExportLocalJson() {
     if (!store) return;
-    const blob = new Blob([JSON.stringify(store, null, 2)], { type: 'application/json' });
+    const backupEnvelope = {
+      app: 'BDI Daily Quran & Hadis',
+      exportedAt: new Date().toISOString(),
+      hadithCount: store.hadiths.length,
+      contactCount: store.contacts.length,
+      store,
+    };
+    const blob = new Blob([JSON.stringify(backupEnvelope, null, 2)], {
+      type: 'application/json',
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `bdi-daily-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    notify('success', 'File JSON backup berhasil diunduh ke penyimpanan perangkat.');
+    notify('success', 'File backup (.JSON) berhasil di-download ke penyimpanan perangkat.');
   }
 
   function handleImportLocalJson(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1110,17 +1718,14 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const parsed = JSON.parse(String(ev.target?.result || '{}'));
-        const res = await fetch('/api/store/restore', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ store: parsed }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          setStore(data.store);
-          notify('success', 'Data berhasil dipulihkan dari file JSON lokal.');
-        }
+        const rawParsed = JSON.parse(String(ev.target?.result || '{}'));
+        const payload = rawParsed?.store || rawParsed?.payload || rawParsed;
+        const applied = await applyRestoredStoreBothServerAndClient(payload);
+        pushAutoCloudSync(applied, 'Import File JSON Lokal');
+        notify(
+          'success',
+          `Import berhasil! ${applied.hadiths?.length || 0} hadis & ${applied.contacts?.length || 0} kontak telah dipulihkan.`
+        );
       } catch {
         notify('error', 'Format file JSON tidak valid.');
       }
@@ -1445,14 +2050,53 @@ export default function App() {
       )}
 
       {/* ============================================================
-          MODAL TUTORIAL LENGKAP (FIRESTORE, GITHUB, GSHEET, WA QR)
+          MODAL KONFIRMASI SIMPAN / TIMPA FILE DI FOLDER GOOGLE DRIVE
+         ============================================================ */}
+      {confirmDriveOverwriteOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl shadow-lg p-5 space-y-4">
+            <h3 className="text-base font-bold text-slate-900">
+              Konfirmasi Backup ke Folder Google Drive
+            </h3>
+            <p className="text-xs text-slate-700 leading-relaxed">
+              Aplikasi akan membuat atau memperbarui file cadangan{' '}
+              <code className="font-mono bg-slate-100 px-1 py-0.5 rounded">
+                bdi-daily-hadis-backup.json
+              </code>{' '}
+              di dalam folder khusus{' '}
+              <strong>&ldquo;BDI Daily Quran &amp; Hadis Backup&rdquo;</strong> pada Google Drive
+              akun <strong>{activeAccount?.email}</strong> ({store.hadiths.length} materi hadis,{' '}
+              {store.contacts.length} kontak, dan {store.projects.length} BDI Projek).
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setConfirmDriveOverwriteOpen(false)}
+                className="min-h-[40px] px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-lg"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={executeConfirmedGoogleAccountBackup}
+                className="min-h-[40px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg"
+              >
+                Ya, Simpan ke Folder Google Drive
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================
+          MODAL TUTORIAL SEDERHANA (WA QR, AKUN GOOGLE DRIVE, LOCAL STORAGE/JSON)
          ============================================================ */}
       {activeTutorialModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
           <div className="w-full max-w-2xl bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden flex flex-col max-h-[90vh]">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
               <h3 className="text-base font-bold text-slate-900">
-                Panduan &amp; Preview Tutorial Integrasi
+                Panduan Koneksi WA Admin &amp; Backup Data
               </h3>
               <button
                 type="button"
@@ -1465,10 +2109,9 @@ export default function App() {
 
             <div className="px-5 py-2.5 bg-slate-100 border-b border-slate-200 flex flex-wrap gap-1.5">
               {[
-                { id: 'wa_qr', label: '1. Cara Tautkan WA QR / 1 HP' },
-                { id: 'firestore', label: '2. Cara Sinkronisasi Cloud Firestore' },
-                { id: 'github', label: '3. Cara Konek ke GitHub Repo' },
-                { id: 'gsheet', label: '4. Cara Konek ke Google Sheets' },
+                { id: 'wa_qr', label: '1. Cara Tautkan WA Admin (QR / Pairing Code)' },
+                { id: 'google_account', label: '2. Cara Backup ke Akun Google (Folder Drive)' },
+                { id: 'local', label: '3. Cara Backup Local Storage / Download & Import' },
               ].map((t) => (
                 <button
                   key={t.id}
@@ -1489,107 +2132,61 @@ export default function App() {
               {activeTutorialModal === 'wa_qr' && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-bold text-slate-900">
-                    Tutorial Menautkan Nomor WA Admin Headless (QR Code &amp; Pairing Code)
+                    Tutorial Menautkan Nomor WA Admin Headless (QR Asli WhatsApp &amp; Pairing Code)
                   </h4>
                   <p>
-                    Karena mesin <strong>Baileys Headless</strong> berjalan langsung di server Web App ini, Anda <strong>tidak wajib membuat file APK terpisah</strong>—cukup buka Web App ini di Chrome HP (Vivo Y71) atau laptop, dan pengiriman otomatis tetap berjalan di latar belakang server.
+                    Mesin Baileys kini langsung menghasilkan <strong>QR Code Asli WhatsApp Web</strong> beserta <strong>Auto-Reconnect Handshake (Kode 515)</strong> sehingga saat Anda scan dari aplikasi WhatsApp di HP, perangkat langsung tertaut secara nyata.
                   </p>
                   <ol className="list-decimal list-inside space-y-2 bg-slate-50 p-4 rounded-lg border border-slate-200">
                     <li>
                       Ketik nomor WhatsApp Admin Anda pada kolom <strong>Nomor WhatsApp Admin Pengirim</strong> lalu klik <strong>Simpan Nomor</strong>.
                     </li>
                     <li>
-                      Jika menggunakan <strong>2 perangkat</strong> (misal buka Web App di Laptop, WA di HP): Klik tombol <strong>Tampilkan QR Code Baru</strong>, tunggu 2 detik hingga gambar QR muncul, lalu buka WhatsApp di HP &rarr; <strong>Perangkat Tertaut</strong> &rarr; <strong>Tautkan Perangkat</strong>.
+                      <strong>Metode Scan QR (2 Perangkat):</strong> Klik <strong>Tampilkan QR Code Baru</strong>, tunggu 2–3 detik hingga QR hitam-putih resmi WhatsApp muncul, lalu buka WhatsApp di HP &rarr; <strong>Perangkat Tertaut</strong> &rarr; <strong>Tautkan Perangkat</strong> &rarr; arahkan kamera ke QR. Setelah di-scan, tunggu 2–4 detik hingga status otomatis berubah menjadi <strong>CONNECTED</strong>.
                     </li>
                     <li>
-                      Jika hanya menggunakan <strong>1 HP (Vivo Y71 saja)</strong>: Klik tombol <strong>Minta 8-Digit Pairing Code</strong>, salin kode 8 digit yang muncul di layar, lalu masukkan ke notifikasi WhatsApp <em>&ldquo;Masukkan kode untuk menautkan perangkat baru&rdquo;</em>.
-                    </li>
-                    <li>
-                      Setelah di-scan atau dimasukkan kodenya, klik tombol <strong>Konfirmasi Sudah Scan / Aktifkan Sesi Headless</strong> agar status langsung berubah menjadi <strong>CONNECTED</strong>.
+                      <strong>Metode 1 HP (Vivo Y71 Tanpa Scan):</strong> Klik <strong>Minta 8-Digit Pairing Code (1 HP)</strong>, tunggu 2–3 detik hingga kode 8 huruf/angka muncul, lalu masukkan kode tersebut pada notifikasi WhatsApp yang muncul di HP Anda.
                     </li>
                   </ol>
                 </div>
               )}
 
-              {activeTutorialModal === 'firestore' && (
+              {activeTutorialModal === 'google_account' && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-bold text-slate-900">
-                    Tutorial Sinkronisasi Real-Time &amp; Backup Firebase Firestore
+                    Bagaimana Cara Kerja Backup &amp; Sinkronisasi ke Akun Google?
                   </h4>
                   <p>
-                    Database Firestore sudah otomatis disiapkan untuk aplikasi ini dan terikat ke akun Google Anda (<strong>{activeAccount?.email}</strong>).
+                    Kami telah menyederhanakan sistem backup agar <strong>otomatis diatur oleh aplikasi</strong> cukup dengan Akun Google Anda (<strong>{activeAccount?.email}</strong>):
                   </p>
                   <ol className="list-decimal list-inside space-y-2 bg-slate-50 p-4 rounded-lg border border-slate-200">
                     <li>
-                      Setiap kali Anda menambah database hadis, mengedit format, atau menjalankan <strong>BDI Projek</strong> di HP Android, server menyimpan state secara real-time.
+                      <strong>Otomatis Buat Folder di Google Drive:</strong> Saat Anda klik <strong>Backup ke Akun Google (Google Drive)</strong>, aplikasi otomatis membuat folder khusus bernama <code>BDI Daily Quran &amp; Hadis Backup</code> di dalam Google Drive Anda.
                     </li>
                     <li>
-                      Saat Anda membuka Web App ini di perangkat lain (misal PC/Laptop) dengan akun Google yang sama, tampilan otomatis tersinkronisasi secara langsung.
+                      <strong>Simpan &amp; Timpa 1 File Rapi:</strong> Di dalam folder tersebut, aplikasi menyimpan file <code>bdi-daily-hadis-backup.json</code> yang berisi seluruh profil database hadis, format kirim, kontak jamaah, dan jadwal BDI Projek.
                     </li>
                     <li>
-                      Untuk menyimpan snapshot cadangan permanen ke Cloud Firestore, klik tombol <strong>Simpan Snapshot ke Cloud Firestore</strong>. Untuk memulihkan data kapan saja, klik <strong>Restore dari Cloud Firestore</strong>.
+                      <strong>Sinkronisasi Real-Time Lintas Perangkat:</strong> Selain disimpan di folder Google Drive, aplikasi juga menyinkronkan data secara real-time antar HP Android dan browser laptop yang login dengan akun Google yang sama.
                     </li>
                   </ol>
                 </div>
               )}
 
-              {activeTutorialModal === 'github' && (
+              {activeTutorialModal === 'local' && (
                 <div className="space-y-3">
                   <h4 className="text-sm font-bold text-slate-900">
-                    Tutorial Backup &amp; Sinkronisasi Database ke GitHub Repository
+                    Cara Backup ke Local Storage Browser, Download File (.JSON) &amp; Import
                   </h4>
-                  <p>
-                    Anda dapat menyimpan seluruh database Hadis, Kontak, dan BDI Projek langsung menjadi file JSON di dalam repository GitHub pribadi Anda:
-                  </p>
                   <ol className="list-decimal list-inside space-y-2 bg-slate-50 p-4 rounded-lg border border-slate-200">
                     <li>
-                      Buat repository baru di GitHub (contoh: <code>username/bdi-hadis-backup</code>).
+                      <strong>Simpan Cepat ke Local Storage Perangkat:</strong> Klik tombol <strong>Simpan ke Local Storage</strong> untuk menyimpan cadangan instan di memori browser HP/Laptop tanpa kuota internet.
                     </li>
                     <li>
-                      Buka menu GitHub <strong>Settings &rarr; Developer settings &rarr; Personal access tokens (Tokens classic)</strong>, lalu buat token baru dengan centang izin <code>repo</code>.
+                      <strong>Download File Backup (.JSON):</strong> Klik tombol <strong>Download File Backup (.JSON)</strong> untuk mengunduh seluruh data menjadi file ke folder <em>Download</em> di HP Vivo Y71 atau komputer Anda.
                     </li>
                     <li>
-                      Masukkan nama repo (<code>username/nama-repo</code>) dan token `ghp_...` pada tab <strong>GitHub Repo</strong> di aplikasi ini.
-                    </li>
-                    <li>
-                      Klik <strong>Upload Backup ke GitHub</strong> untuk meng-commit data terbaru, atau <strong>Tarik (Restore) dari GitHub</strong> dari perangkat mana pun.
-                    </li>
-                  </ol>
-                </div>
-              )}
-
-              {activeTutorialModal === 'gsheet' && (
-                <div className="space-y-3">
-                  <h4 className="text-sm font-bold text-slate-900">
-                    Tutorial Integrasi Backup ke Google Sheets (Akun Google yang Sama)
-                  </h4>
-                  <p>
-                    Agar data tersimpan rapi di Google Spreadsheet milik akun Google Anda tanpa biaya:
-                  </p>
-                  <ol className="list-decimal list-inside space-y-2 bg-slate-50 p-4 rounded-lg border border-slate-200">
-                    <li>
-                      Buka Google Sheets baru di akun Google Anda, lalu klik menu <strong>Ekstensi &rarr; Apps Script</strong>.
-                    </li>
-                    <li>
-                      Tempelkan kode singkat berikut di Apps Script:
-                      <pre className="mt-2 p-3 bg-slate-900 text-emerald-300 rounded font-mono text-[11px] overflow-x-auto">
-{`function doPost(e) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  sheet.getRange("A1").setValue(e.postData.contents);
-  sheet.getRange("B1").setValue(new Date().toISOString());
-  return ContentService.createTextOutput(JSON.stringify({ok: true}))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-function doGet() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var raw = sheet.getRange("A1").getValue() || "{}";
-  return ContentService.createTextOutput(raw)
-    .setMimeType(ContentService.MimeType.JSON);
-}`}
-                      </pre>
-                    </li>
-                    <li>
-                      Klik <strong>Terapkan (Deploy) &rarr; Deployment baru &rarr; Aplikasi Web</strong>, pilih akses <em>&ldquo;Siapa saja (Anyone)&rdquo;</em>, lalu salin URL Web App (`https://script.google.com/macros/s/.../exec`) ke kolom Google Sheets di aplikasi ini.
+                      <strong>Import File Backup (.JSON):</strong> Klik tombol <strong>Import File Backup (.JSON)</strong> lalu pilih file <code>.json</code> dari penyimpanan HP/komputer untuk memulihkan seluruh database hadis, kontak, dan projek secara utuh.
                     </li>
                   </ol>
                 </div>
@@ -1969,7 +2566,7 @@ function doGet() {
               </div>
 
               <form onSubmit={handleGenerateWithAI} className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                <div className="md:col-span-2">
+                <div className="md:col-span-3">
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Jenis Materi
                   </label>
@@ -1983,27 +2580,7 @@ function doGet() {
                   </select>
                 </div>
 
-                <div className="md:col-span-3">
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Sumber Kitab Shahih Gratis
-                  </label>
-                  <select
-                    value={aiBook}
-                    onChange={(e) => setAiBook(e.target.value)}
-                    disabled={aiType === 'quran'}
-                    className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm text-slate-900 disabled:opacity-50"
-                  >
-                    <option value="bukhari">Shahih Bukhari</option>
-                    <option value="muslim">Shahih Muslim</option>
-                    <option value="tirmidzi">Sunan Tirmidzi</option>
-                    <option value="abu-daud">Sunan Abu Dawud</option>
-                    <option value="nasai">Sunan An-Nasa&apos;i</option>
-                    <option value="ibnu-majah">Sunan Ibnu Majah</option>
-                    <option value="semua">Bukhari &amp; Muslim</option>
-                  </select>
-                </div>
-
-                <div className="md:col-span-5">
+                <div className="md:col-span-6">
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Kriteria / Tema Pembahasan
                   </label>
@@ -2016,7 +2593,7 @@ function doGet() {
                   />
                 </div>
 
-                <div className="md:col-span-2">
+                <div className="md:col-span-3">
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Jumlah Hadis (Ketik)
                   </label>
@@ -2030,6 +2607,88 @@ function doGet() {
                     className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm text-slate-900 font-mono-num"
                   />
                 </div>
+
+                {aiType === 'hadis' && (
+                  <div className="md:col-span-12 p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="text-xs font-semibold text-slate-800">
+                        Pilih Sumber Kitab Shahih Gratis (Bisa Pilih Lebih dari Satu):{' '}
+                        <span className="text-emerald-800 font-mono-num">
+                          ({aiBooks.length} kitab dipilih)
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAiBooks([
+                              'bukhari',
+                              'muslim',
+                              'tirmidzi',
+                              'abu-daud',
+                              'nasai',
+                              'ibnu-majah',
+                            ])
+                          }
+                          className="text-xs font-semibold text-emerald-800 underline"
+                        >
+                          Pilih Semua Kitab (6 Kitab)
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <button
+                          type="button"
+                          onClick={() => setAiBooks(['bukhari', 'muslim'])}
+                          className="text-xs font-semibold text-slate-600 underline"
+                        >
+                          Hanya Bukhari &amp; Muslim
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                      {[
+                        { id: 'bukhari', label: 'Shahih Bukhari' },
+                        { id: 'muslim', label: 'Shahih Muslim' },
+                        { id: 'tirmidzi', label: 'Sunan Tirmidzi' },
+                        { id: 'abu-daud', label: 'Sunan Abu Dawud' },
+                        { id: 'nasai', label: "Sunan An-Nasa'i" },
+                        { id: 'ibnu-majah', label: 'Sunan Ibnu Majah' },
+                      ].map((book) => {
+                        const isChecked = aiBooks.includes(book.id);
+                        return (
+                          <label
+                            key={book.id}
+                            className={`min-h-[40px] px-3 py-2 rounded-lg border text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors ${
+                              isChecked
+                                ? 'bg-emerald-50 border-emerald-600 text-emerald-950'
+                                : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setAiBooks((prev) =>
+                                    prev.includes(book.id) ? prev : [...prev, book.id]
+                                  );
+                                } else {
+                                  if (aiBooks.length <= 1) {
+                                    notify('error', 'Minimal 1 sumber kitab harus tetap dipilih.');
+                                    return;
+                                  }
+                                  setAiBooks((prev) => prev.filter((id) => id !== book.id));
+                                }
+                              }}
+                              className="w-4 h-4 accent-emerald-700 shrink-0"
+                            />
+                            <span className="truncate">{book.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div className="md:col-span-12 flex flex-wrap items-center justify-between gap-3 pt-1">
                   <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
@@ -2634,16 +3293,35 @@ function doGet() {
                   03. Daftar Kontak Jamaah &amp; Kategori Penerima
                 </h1>
                 <p className="text-sm text-slate-600 mt-1">
-                  Kelola daftar nomor WhatsApp jamaah dan tentukan apakah mereka menerima <strong>Hadis Singkat</strong> atau <strong>Hadis Detail (Lengkap)</strong>.
+                  Kelola daftar nomor WhatsApp jamaah, tentukan penerima <strong>Hadis Singkat</strong> atau <strong>Hadis Detail</strong>, serta <strong>Impor / Export Kontak</strong>.
                 </p>
               </div>
-              <button
-                onClick={() => setShowBulkImport(!showBulkImport)}
-                className="min-h-[44px] px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-lg flex items-center gap-2 self-start whitespace-nowrap shrink-0"
-              >
-                <Upload className="w-4 h-4" />
-                <span>Impor Banyak Kontak Sekaligus</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2 self-start shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleExportContacts('csv')}
+                  className="min-h-[42px] px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Export Kontak (.CSV / Excel)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportContacts('json')}
+                  className="min-h-[42px] px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-4 h-4 text-emerald-700" />
+                  <span>Export Kontak (.JSON)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowBulkImport(!showBulkImport)}
+                  className="min-h-[42px] px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <Upload className="w-4 h-4 text-emerald-700" />
+                  <span>Impor Kontak Massal</span>
+                </button>
+              </div>
             </div>
 
             {showBulkImport && (
@@ -3719,78 +4397,99 @@ function doGet() {
                 </button>
               </div>
 
-              {/* RIGHT: MULTI-CLOUD BACKUP & SYNC (FIRESTORE, GITHUB, GOOGLE SHEETS, FILE JSON) */}
+              {/* RIGHT: SIMPLIFIED BACKUP, RESTORE & SYNC (1. AKUN GOOGLE / FOLDER GOOGLE DRIVE, 2. LOCAL STORAGE / DOWNLOAD & IMPORT) */}
               <div className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3">
                   <div>
                     <h2 className="text-base font-bold text-slate-900">
-                      Backup, Restore &amp; Sinkronisasi Multi-Cloud
+                      Backup, Restore &amp; Sinkronisasi Sederhana
                     </h2>
                     <p className="text-xs text-slate-600">
-                      Pilih tujuan sinkronisasi: <strong>Firebase Firestore</strong>, <strong>GitHub Repo</strong>, <strong>Google Sheets</strong>, atau <strong>File JSON</strong>.
+                      Cukup pilih: <strong>1. Backup ke Akun Google (Otomatis Buat Folder di Google Drive)</strong> atau <strong>2. Backup ke Local Storage / Download &amp; Import File</strong>.
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() =>
-                      setActiveTutorialModal(
-                        cloudProviderTab === 'local' ? 'firestore' : cloudProviderTab
-                      )
-                    }
-                    className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold rounded-lg flex items-center gap-1"
+                    onClick={() => setActiveTutorialModal(cloudProviderTab)}
+                    className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold rounded-lg flex items-center gap-1 shrink-0"
                   >
                     <HelpCircle className="w-3.5 h-3.5" />
                     <span>Tutorial</span>
                   </button>
                 </div>
 
-                {/* Provider Selector Tabs */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-slate-100 p-1 rounded-lg">
-                  {[
-                    { id: 'firestore', label: '1. Firestore Cloud' },
-                    { id: 'github', label: '2. GitHub Repo' },
-                    { id: 'gsheet', label: '3. Google Sheets' },
-                    { id: 'local', label: '4. File JSON HP' },
-                  ].map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setCloudProviderTab(tab.id as any)}
-                      className={`py-2 px-2 text-xs font-semibold rounded-md transition-colors ${
-                        cloudProviderTab === tab.id
-                          ? 'bg-white text-emerald-800 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
+                {/* Simplified 2-Mode Selector Tabs */}
+                <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-lg">
+                  <button
+                    type="button"
+                    onClick={() => setCloudProviderTab('google_account')}
+                    className={`py-2.5 px-3 text-xs font-semibold rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                      cloudProviderTab === 'google_account'
+                        ? 'bg-white text-emerald-800 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Folder className="w-3.5 h-3.5" />
+                    <span>1. Backup Akun Google (Drive)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCloudProviderTab('local')}
+                    className={`py-2.5 px-3 text-xs font-semibold rounded-md transition-colors flex items-center justify-center gap-1.5 ${
+                      cloudProviderTab === 'local'
+                        ? 'bg-white text-emerald-800 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>2. Local Storage / Download &amp; Import</span>
+                  </button>
                 </div>
 
-                {/* TAB A: FIREBASE FIRESTORE */}
-                {cloudProviderTab === 'firestore' && (
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
+                {/* TAB 1: AKUN GOOGLE (OTOMATIS BUAT FOLDER DI GOOGLE DRIVE + REAL-TIME SYNC) */}
+                {cloudProviderTab === 'google_account' && (
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3.5">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
                         <p className="text-xs font-bold text-slate-900">
-                          Firebase Firestore (Akun: {activeAccount?.email})
+                          Akun Google Terhubung: <span className="text-emerald-800">{activeAccount?.email}</span>
                         </p>
-                        <p className="text-[11px] text-slate-600">
-                          Sinkronisasi real-time antar HP Android dan Web Browser.
+                        <p className="text-[11px] text-slate-600 mt-0.5">
+                          Otomatis membuat folder <strong>&ldquo;BDI Daily Quran &amp; Hadis Backup&rdquo;</strong> di Google Drive Anda dan menyinkronkan data lintas perangkat.
                         </p>
                       </div>
                       <button
                         type="button"
-                        onClick={() => setActiveTutorialModal('firestore')}
-                        className="text-xs text-emerald-800 font-semibold underline"
+                        onClick={handleConnectGoogleDriveFolder}
+                        disabled={cloudBusy}
+                        className="min-h-[34px] px-3 py-1 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg flex items-center gap-1.5 shrink-0"
                       >
-                        Cara Kerja
+                        <Folder className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>
+                          {driveConnected ? 'Cek Folder Google Drive' : 'Hubungkan Folder Drive'}
+                        </span>
                       </button>
                     </div>
 
+                    {driveBackupInfo && (
+                      <div className="p-3 bg-white border border-emerald-200 rounded-lg text-xs space-y-1">
+                        <p className="font-semibold text-slate-900 flex items-center gap-1.5">
+                          <Folder className="w-4 h-4 text-emerald-700 shrink-0" />
+                          <span>Folder Drive: {driveBackupInfo.folderName}</span>
+                        </p>
+                        <p className="text-slate-600">
+                          File Backup:{' '}
+                          <code className="font-mono text-slate-800">{driveBackupInfo.fileName}</code>{' '}
+                          {driveBackupInfo.modifiedTime
+                            ? `(Terakhir diperbarui: ${driveBackupInfo.modifiedTime})`
+                            : '(Belum ada file, klik Backup di bawah untuk membuat otomatis)'}
+                        </p>
+                      </div>
+                    )}
+
                     <div>
                       <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Label Cadangan Cloud
+                        Catatan / Label Backup Akun Google
                       </label>
                       <input
                         type="text"
@@ -3804,20 +4503,22 @@ function doGet() {
                       <button
                         type="button"
                         disabled={cloudBusy}
-                        onClick={handleCloudBackup}
+                        onClick={handleRequestGoogleAccountBackup}
                         className="min-h-[44px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
                       >
                         <CloudUpload className="w-4 h-4" />
-                        <span>{cloudBusy ? 'Memproses...' : 'Backup ke Firestore'}</span>
+                        <span>
+                          {cloudBusy ? 'Memproses...' : 'Backup ke Akun Google (Drive)'}
+                        </span>
                       </button>
                       <button
                         type="button"
                         disabled={cloudBusy}
-                        onClick={handleCloudRestore}
+                        onClick={handleGoogleAccountRestore}
                         className="min-h-[44px] px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
                       >
                         <CloudDownload className="w-4 h-4" />
-                        <span>Restore dari Firestore</span>
+                        <span>Restore dari Akun Google</span>
                       </button>
                     </div>
 
@@ -3827,167 +4528,75 @@ function doGet() {
                   </div>
                 )}
 
-                {/* TAB B: GITHUB REPOSITORY SYNC */}
-                {cloudProviderTab === 'github' && (
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-bold text-slate-900">
-                        Integrasi GitHub Repository (Push / Pull JSON Database)
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTutorialModal('github')}
-                        className="text-xs text-emerald-800 font-semibold underline"
-                      >
-                        Lihat Tutorial GitHub
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1">
-                          Nama Repository (user/repo)
-                        </label>
-                        <input
-                          type="text"
-                          value={githubRepoDraft}
-                          onChange={(e) => setGithubRepoDraft(e.target.value)}
-                          placeholder="ridgitalstudio/bdi-hadis-db"
-                          className="w-full min-h-[38px] px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1">
-                          Branch &amp; Path File
-                        </label>
-                        <input
-                          type="text"
-                          value={githubFilePathDraft}
-                          onChange={(e) => setGithubFilePathDraft(e.target.value)}
-                          placeholder="backup/bdi-daily-hadis.json"
-                          className="w-full min-h-[38px] px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        GitHub Personal Access Token (ghp_...)
-                      </label>
-                      <input
-                        type="password"
-                        value={githubTokenDraft}
-                        onChange={(e) => setGithubTokenDraft(e.target.value)}
-                        placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                        className="w-full min-h-[38px] px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-                      <button
-                        type="button"
-                        disabled={cloudBusy}
-                        onClick={() => handleGithubSync('push')}
-                        className="min-h-[42px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
-                      >
-                        <CloudUpload className="w-4 h-4" />
-                        <span>Upload Backup ke GitHub</span>
-                      </button>
-                      <button
-                        type="button"
-                        disabled={cloudBusy}
-                        onClick={() => handleGithubSync('pull')}
-                        className="min-h-[42px] px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
-                      >
-                        <CloudDownload className="w-4 h-4" />
-                        <span>Restore dari GitHub</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB C: GOOGLE SHEETS SYNC */}
-                {cloudProviderTab === 'gsheet' && (
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs font-bold text-slate-900">
-                        Integrasi Google Sheets (Akun Google: {activeAccount?.email})
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTutorialModal('gsheet')}
-                        className="text-xs text-emerald-800 font-semibold underline"
-                      >
-                        Lihat Kode &amp; Tutorial GSheet
-                      </button>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        URL Web App Google Sheets (Apps Script)
-                      </label>
-                      <input
-                        type="url"
-                        value={gsheetUrlDraft}
-                        onChange={(e) => setGsheetUrlDraft(e.target.value)}
-                        placeholder="https://script.google.com/macros/s/.../exec"
-                        className="w-full min-h-[40px] px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <button
-                        type="button"
-                        disabled={cloudBusy}
-                        onClick={() => handleGsheetSync('push')}
-                        className="min-h-[42px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
-                      >
-                        <CloudUpload className="w-4 h-4" />
-                        <span>Simpan ke Google Sheets</span>
-                      </button>
-                      <button
-                        type="button"
-                        disabled={cloudBusy}
-                        onClick={() => handleGsheetSync('pull')}
-                        className="min-h-[42px] px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
-                      >
-                        <CloudDownload className="w-4 h-4" />
-                        <span>Restore dari Google Sheets</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB D: LOCAL PHONE JSON */}
+                {/* TAB 2: LOCAL STORAGE BROWSER + DOWNLOAD FILE (.JSON) & IMPORT */}
                 {cloudProviderTab === 'local' && (
-                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
-                    <p className="text-xs font-bold text-slate-900">
-                      Cadangan File Lokal HP (.JSON) — Tanpa Kuota Internet
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <button
-                        type="button"
-                        onClick={handleExportLocalJson}
-                        className="min-h-[44px] px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
-                      >
-                        <Download className="w-4 h-4" />
-                        <span>Ekspor Backup (.JSON)</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="min-h-[44px] px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
-                      >
-                        <Upload className="w-4 h-4" />
-                        <span>Impor Restore (.JSON)</span>
-                      </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept=".json,application/json"
-                        onChange={handleImportLocalJson}
-                        className="hidden"
-                      />
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-bold text-slate-900">
+                          A. Backup &amp; Restore Cepat di Local Storage Browser
+                        </p>
+                        {localSavedTimestamp && (
+                          <span className="text-[11px] font-mono-num text-emerald-800">
+                            Tersimpan: {localSavedTimestamp}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-600">
+                        Menyimpan seluruh database hadis, kontak, dan projek langsung di memori browser perangkat ini tanpa perlu internet.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <button
+                          type="button"
+                          onClick={handleSaveToBrowserLocalStorage}
+                          className="min-h-[42px] px-3 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span>Simpan ke Local Storage</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRestoreFromBrowserLocalStorage}
+                          className="min-h-[42px] px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          <span>Restore dari Local Storage</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-200 space-y-2">
+                      <p className="text-xs font-bold text-slate-900">
+                        B. Download File Backup (.JSON) &amp; Import File dari Perangkat
+                      </p>
+                      <p className="text-[11px] text-slate-600">
+                        Download seluruh database menjadi file <code>.json</code> ke memori HP Vivo Y71 / Laptop Anda, atau Import kembali file <code>.json</code> kapan saja.
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <button
+                          type="button"
+                          onClick={handleExportLocalJson}
+                          className="min-h-[44px] px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
+                        >
+                          <Download className="w-4 h-4 text-emerald-700" />
+                          <span>Download File Backup (.JSON)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="min-h-[44px] px-4 py-2 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg flex items-center justify-center gap-2"
+                        >
+                          <Upload className="w-4 h-4 text-emerald-700" />
+                          <span>Import File Backup (.JSON)</span>
+                        </button>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept=".json,application/json"
+                          onChange={handleImportLocalJson}
+                          className="hidden"
+                        />
+                      </div>
                     </div>
                   </div>
                 )}

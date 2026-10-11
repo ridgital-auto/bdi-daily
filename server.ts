@@ -8,6 +8,8 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  Browsers,
+  makeCacheableSignalKeyStore,
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
@@ -534,6 +536,8 @@ async function startBaileysSession(requestPairingForPhone?: string, freshReset =
   try {
     if (waSocket) {
       try {
+        waSocket.ev.removeAllListeners('connection.update');
+        waSocket.ev.removeAllListeners('creds.update');
         waSocket.end(undefined);
       } catch {
         // ignore cleanup error
@@ -551,46 +555,23 @@ async function startBaileysSession(requestPairingForPhone?: string, freshReset =
 
     waState.status = 'connecting';
     waState.lastError = null;
-    waState.qrDataUrl = null;
-    waState.pairingCode = null;
+    if (freshReset) {
+      waState.qrDataUrl = null;
+      waState.pairingCode = null;
+    }
 
     if (!fs.existsSync(WA_AUTH_DIR)) {
       fs.mkdirSync(WA_AUTH_DIR, { recursive: true });
     }
 
-    // Wait up to 3.5 seconds for Baileys to emit QR/Pairing code; if sandbox blocks WS port, generate instant interactive QR / Pairing Code so user is never stuck
-    const fallbackTimer = setTimeout(async () => {
-      if (waState.status === 'connecting' && !waState.qrDataUrl && !waState.pairingCode) {
-        const cleanAdmin = normalizePhone(
-          requestPairingForPhone || store.gatewaySettings.adminPhone || '6281200000000'
-        );
-        if (requestPairingForPhone) {
-          const part1 = cleanAdmin.slice(-4).padStart(4, '8');
-          const part2 = Math.floor(1000 + Math.random() * 9000).toString();
-          waState.pairingCode = `${part1}-${part2}`;
-          waState.status = 'qr_ready';
-        } else {
-          const qrPayload = `2@${Buffer.from(`bdi-wa-${cleanAdmin}-${Date.now()}`).toString('base64')},BDI-Headless-Gateway,1.0`;
-          try {
-            waState.qrDataUrl = await QRCode.toDataURL(qrPayload, {
-              width: 260,
-              margin: 2,
-              color: { dark: '#047857', light: '#FFFFFF' },
-            });
-            waState.status = 'qr_ready';
-          } catch {
-            // ignore
-          }
-        }
-      }
-    }, 2200);
-
+    const logger = pino({ level: 'silent' }) as any;
     const { state, saveCreds } = await useMultiFileAuthState(WA_AUTH_DIR);
-    let version: [number, number, number] = [2, 3000, 1015901307];
+
+    let version: [number, number, number] = [2, 3000, 1043857760];
     try {
       const latest = await Promise.race([
         fetchLatestBaileysVersion(),
-        new Promise<null>((r) => setTimeout(() => r(null), 2000)),
+        new Promise<null>((r) => setTimeout(() => r(null), 3500)),
       ]);
       if (latest?.version) version = latest.version;
     } catch {
@@ -599,11 +580,19 @@ async function startBaileysSession(requestPairingForPhone?: string, freshReset =
 
     const sock = makeWASocket({
       version,
-      auth: state,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
+      },
       printQRInTerminal: false,
-      logger: pino({ level: 'silent' }) as any,
-      browser: ['BDI Daily Hadis', 'Chrome', '1.0.0'],
-      connectTimeoutMs: 15000,
+      logger,
+      // Use standard Ubuntu Chrome signature required by WhatsApp Web for QR & Pairing Code
+      browser: Browsers.ubuntu('Chrome'),
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
     });
 
     waSocket = sock;
@@ -613,21 +602,26 @@ async function startBaileysSession(requestPairingForPhone?: string, freshReset =
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      if (qr) {
-        clearTimeout(fallbackTimer);
+      if (qr && !requestPairingForPhone) {
         waState.status = 'qr_ready';
+        waState.lastError = null;
         try {
-          waState.qrDataUrl = await QRCode.toDataURL(qr, { width: 260, margin: 2 });
+          waState.qrDataUrl = await QRCode.toDataURL(qr, {
+            width: 280,
+            margin: 2,
+            errorCorrectionLevel: 'M',
+            color: { dark: '#000000', light: '#FFFFFF' },
+          });
         } catch {
-          // ignore
+          // ignore QR image error
         }
       }
 
       if (connection === 'open') {
-        clearTimeout(fallbackTimer);
         waState.status = 'connected';
         waState.qrDataUrl = null;
         waState.pairingCode = null;
+        waState.lastError = null;
         const userJid = sock.user?.id || '';
         waState.connectedPhone =
           userJid.split(':')[0].split('@')[0] || store.gatewaySettings.adminPhone;
@@ -635,6 +629,8 @@ async function startBaileysSession(requestPairingForPhone?: string, freshReset =
 
       if (connection === 'close') {
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
         if (statusCode === DisconnectReason.loggedOut) {
           try {
             fs.rmSync(WA_AUTH_DIR, { recursive: true, force: true });
@@ -643,6 +639,18 @@ async function startBaileysSession(requestPairingForPhone?: string, freshReset =
           }
           waState.status = 'disconnected';
           waState.qrDataUrl = null;
+          waState.pairingCode = null;
+          waState.connectedPhone = null;
+        } else if (
+          statusCode === DisconnectReason.restartRequired ||
+          statusCode === 515 ||
+          shouldReconnect
+        ) {
+          // CRITICAL: WhatsApp Web requires stream restart (515) right after QR scan / Pairing code is accepted!
+          // Reconnect immediately WITHOUT wiping WA_AUTH_DIR so the linked device completes handshake.
+          setTimeout(() => {
+            startBaileysSession(undefined, false);
+          }, 800);
         }
       }
     });
@@ -652,16 +660,20 @@ async function startBaileysSession(requestPairingForPhone?: string, freshReset =
       if (cleanPhone.length >= 9) {
         setTimeout(async () => {
           try {
-            const code = await sock.requestPairingCode(cleanPhone);
-            if (code) {
-              clearTimeout(fallbackTimer);
-              waState.pairingCode = code;
+            const rawCode = await sock.requestPairingCode(cleanPhone);
+            if (rawCode) {
+              const formatted =
+                rawCode.length === 8 ? `${rawCode.slice(0, 4)}-${rawCode.slice(4)}` : rawCode;
+              waState.pairingCode = formatted;
+              waState.qrDataUrl = null;
               waState.status = 'qr_ready';
+              waState.lastError = null;
             }
-          } catch {
-            // fallbackTimer will handle pairingCode generation if socket fails in cloud container
+          } catch (pairErr: any) {
+            waState.lastError =
+              pairErr?.message || 'Gagal meminta Pairing Code, coba gunakan metode Scan QR.';
           }
-        }, 1200);
+        }, 2200);
       }
     }
   } catch (err: any) {
@@ -1275,6 +1287,7 @@ async function startServer() {
       const {
         criteria = 'Keutamaan akhlak mulia, sedekah, dan menjaga lisan',
         sourceBook = 'bukhari',
+        sourceBooks,
         contentType = 'hadis',
         count = 4,
         profileName = 'Belum Terkategori',
@@ -1284,22 +1297,41 @@ async function startServer() {
       const safeCount = Math.min(30, Math.max(1, Number(count) || 4));
       const cleanProfile = String(profileName || 'Belum Terkategori').trim() || 'Belum Terkategori';
 
-      const bookInfo = FREE_HADITH_BOOKS[sourceBook] || {
-        id: sourceBook,
-        label: sourceBook === 'semua' ? 'Kitab Hadis Shahih (Bukhari/Muslim)' : `HR. ${sourceBook}`,
-      };
+      const selectedBooksList: string[] =
+        Array.isArray(sourceBooks) && sourceBooks.length > 0
+          ? sourceBooks.map((b: any) => String(b).trim()).filter(Boolean)
+          : sourceBook === 'semua'
+          ? ['bukhari', 'muslim']
+          : [String(sourceBook || 'bukhari')];
 
-      const rawApiSeeds =
-        contentType === 'hadis' && sourceBook !== 'semua'
-          ? await fetchFreeHadithSeeds(sourceBook, safeCount)
-          : [];
+      const bookLabels = selectedBooksList.map(
+        (id) => FREE_HADITH_BOOKS[id]?.label || `HR. ${id}`
+      );
+      const combinedBooksLabel = bookLabels.join(', ');
+
+      let rawApiSeeds: any[] = [];
+      if (contentType === 'hadis') {
+        const booksToSeed = selectedBooksList.slice(0, 3);
+        const perBookCount = Math.max(1, Math.ceil(safeCount / booksToSeed.length));
+        for (const bId of booksToSeed) {
+          if (FREE_HADITH_BOOKS[bId]) {
+            const seeds = await fetchFreeHadithSeeds(bId, perBookCount);
+            rawApiSeeds.push(
+              ...seeds.map((s: any) => ({
+                ...s,
+                bookLabel: FREE_HADITH_BOOKS[bId].label,
+              }))
+            );
+          }
+        }
+      }
 
       const seedContext =
         rawApiSeeds.length > 0
-          ? `\nBerikut referensi awal dari database terbuka ${bookInfo.label} (gunakan jika relevan dengan kriteria atau pilih hadis shahih lain yang tepat sesuai kriteria):\n` +
+          ? `\nBerikut referensi awal dari database terbuka (${combinedBooksLabel}) (gunakan jika relevan dengan kriteria atau pilih hadis shahih lain yang tepat dari kitab yang dipilih sesuai kriteria):\n` +
             rawApiSeeds
-              .slice(0, 5)
-              .map((s: any) => `No. ${s.number}: ${s.arab} - ${s.id}`)
+              .slice(0, 6)
+              .map((s: any) => `[${s.bookLabel}] No. ${s.number}: ${s.arab} - ${s.id}`)
               .join('\n')
           : '';
 
@@ -1321,10 +1353,10 @@ Pastikan:
 3. Asbabun Nuzul (sebab turunnya ayat) yang shahih dari kitab tafsir muktabar (seperti Tafsir Ibnu Katsir / Ath-Thabari). JIKA tidak ada riwayat asbabun nuzul khusus yang shahih, tuliskan dengan jujur: "Tidak terdapat riwayat asbabun nuzul khusus yang shahih untuk ayat ini; ayat ini turun sebagai tuntunan umum..." (JANGAN membuat-buat cerita sendiri).
 4. Ringkasan singkat padat 1-2 kalimat (untuk penerima singkat).
 5. Hikmah dan pelajaran yang shahih sesuai penjelasan ulama tafsir, tidak dipaksakan atau dikarang bebas.`
-          : `Buatkan ${safeCount} daftar Hadis Shahih dari ${bookInfo.label} berdasarkan kriteria/topik: "${criteria}".${seedContext}
-Pastikan setiap hadis benar-benar berderajat Shahih dan memiliki:
+          : `Buatkan ${safeCount} daftar Hadis Shahih yang diambil dari kitab: ${combinedBooksLabel} berdasarkan kriteria/topik: "${criteria}".${seedContext}
+Pastikan setiap hadis benar-benar berderajat Shahih dari kitab yang dipilih (${combinedBooksLabel}) dan memiliki:
 1. Judul hadis yang jelas dan tepat.
-2. Nama perawi/kitab (misal: HR. Bukhari atau HR. Muslim) dan nomor hadis yang akurat.
+2. Nama perawi/kitab yang spesifik sesuai kitab yang dipilih (${combinedBooksLabel}) dan nomor hadis yang akurat.
 3. Teks Arab berharakat lengkap.
 4. Terjemahan lengkap bahasa Indonesia (untuk kategori penerima hadis detail).
 5. Asbabul Wurud (sebab munculnya hadis) yang shahih berdasarkan riwayat kitab syarah muktabar (seperti Fathul Bari, Syarah Shahih Muslim An-Nawawi, atau Al-Bayan wa At-Ta'rif). PENTING: Jika hadis tersebut memang tidak memiliki riwayat Asbabul Wurud khusus yang shahih, tuliskan secara jujur: "Tidak terdapat riwayat asbabul wurud khusus untuk hadis ini; hadis ini disampaikan Rasulullah ﷺ sebagai tuntunan umum..." — JANGAN mengarang atau memaksakan cerita latar belakang yang tidak berdasar.
@@ -1335,7 +1367,7 @@ Pastikan setiap hadis benar-benar berderajat Shahih dan memiliki:
         model: 'gemini-3.8-flash',
         contents: prompt,
         config: {
-          systemInstruction: `Anda adalah ulama ahli hadis dan peneliti sanad BDI Daily Quran & Hadis yang terhubung dengan akun ${userEmail || 'Admin BDI'}. Anda sangat menjaga keautentikan ilmiah: hanya menyajikan hadis shahih, tidak pernah mengarang asbabul wurud jika memang tidak ada riwayatnya, dan menyarikan hikmah berdasarkan syarah ulama muktabar.`,
+          systemInstruction: `Anda adalah ulama ahli hadis dan peneliti sanad BDI Daily Quran & Hadis yang terhubung dengan akun ${userEmail || 'Admin BDI'}. Anda sangat menjaga keautentikan ilmiah: hanya menyajikan hadis shahih dari kitab pilihan (${combinedBooksLabel}), tidak pernah mengarang asbabul wurud jika memang tidak ada riwayatnya, dan menyarikan hikmah berdasarkan syarah ulama muktabar.`,
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.ARRAY,
@@ -1375,7 +1407,7 @@ Pastikan setiap hadis benar-benar berderajat Shahih dan memiliki:
           id: `preview-${Date.now()}-${index}`,
           type: contentType === 'quran' ? 'quran' : 'hadis',
           profileName: cleanProfile,
-          sourceBook: item.sourceBook || bookInfo.label,
+          sourceBook: item.sourceBook || bookLabels[index % bookLabels.length] || 'HR. Bukhari',
           hadithNumber: String(item.hadithNumber || index + 1),
           title: item.title || 'Mutiara Hadis Shahih',
           arabicText: item.arabicText || '',
@@ -2024,7 +2056,7 @@ Pastikan setiap hadis benar-benar berderajat Shahih dan memiliki:
   // Vite middleware for development or static serving for production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
