@@ -3408,6 +3408,29 @@ export default function App() {
     }
   }
 
+  async function handleRestoreContactsFromDrive() {
+    setCloudBusy(true);
+    try {
+      const driveData = await loadBackupFromGoogleDrive();
+      const count = driveData?.store.contacts?.length || 0;
+      if (driveData && count > 0) {
+        const applied = await applyRestoredStoreBothServerAndClient(driveData.store);
+        setDriveBackupInfo(driveData.info);
+        setDriveConnected(true);
+        notify(
+          'success',
+          `${applied.contacts?.length || 0} kontak dipulihkan dari Google Drive.`
+        );
+      } else {
+        notify('error', 'Tidak ada kontak di backup Google Drive.');
+      }
+    } catch (err: any) {
+      notify('error', err?.message || 'Gagal menarik kontak dari Google Drive.');
+    } finally {
+      setCloudBusy(false);
+    }
+  }
+
   async function handleGoogleAccountRestore() {
     setCloudBusy(true);
     try {
@@ -7146,8 +7169,16 @@ export default function App() {
                 </div>
 
                 {filteredContacts.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-500">
-                    Belum ada kontak jamaah pada filter/grup ini.
+                  <div className="p-8 text-center text-xs text-slate-500 space-y-3">
+                    <p>Belum ada kontak jamaah pada filter/grup ini.</p>
+                    <button
+                      type="button"
+                      onClick={handleRestoreContactsFromDrive}
+                      disabled={cloudBusy}
+                      className="min-h-[36px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg"
+                    >
+                      {cloudBusy ? 'Menarik...' : 'Tarik Kontak dari Google Drive'}
+                    </button>
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-200 border-t border-slate-200">
