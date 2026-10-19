@@ -9519,6 +9519,13 @@ export default function App() {
                         </p>
                       ) : null}
                     </div>
+                    {getBackendUrl() ? (
+                      <div className="p-3 bg-sky-50 border border-sky-200 rounded-lg text-xs text-sky-900 leading-relaxed">
+                        <strong>Mode halaman statis:</strong> status koneksi &amp; pengiriman
+                        WhatsApp dikelola di aplikasi backend — buka lewat tombol biru
+                        "Buka Aplikasi Backend" di atas.
+                      </div>
+                    ) : (
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-800">
                         Status Soket WA Asli:{' '}
@@ -9552,6 +9559,7 @@ export default function App() {
                         </button>
                       )}
                     </div>
+                    )}
 
                     {waState.realSocketConnected || waState.hasSavedCreds || store.gatewaySettings.sessionLinked ? (
                       <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900 flex items-center justify-between gap-2">
