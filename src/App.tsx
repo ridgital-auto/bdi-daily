@@ -3129,6 +3129,12 @@ export default function App() {
   }
 
   async function handleTestSendAdmin() {
+    // Mode halaman statis: test kirim hanya bisa dari aplikasi backend
+    if (getBackendUrl()) {
+      notify('success', 'Tes kirim hanya bisa dari aplikasi backend. Membuka aplikasi backend...');
+      window.open(getBackendUrl(), '_blank', 'noopener');
+      return;
+    }
     const targetPhone = adminPhoneDraft || store?.gatewaySettings.adminPhone;
     try {
       const res = await fetch(api('/api/gateway/test-send'), {
