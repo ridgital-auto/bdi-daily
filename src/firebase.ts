@@ -433,8 +433,11 @@ export async function saveBackupToFirestore(
 
   const payloadMap = {
     profiles: (store.profiles || ['Oktober', 'Belum Terkategori']).slice(0, 100),
+    contactGroups: (store.contactGroups || ['Jamaah Umum']).slice(0, 100),
     hadiths: store.hadiths.slice(0, 500),
+    generationHistory: (store.generationHistory || []).slice(-300),
     templates: store.templates.slice(0, 50),
+    templateVariables: (store.templateVariables || []).slice(0, 100),
     contacts: store.contacts.slice(0, 1000),
     projects: (store.projects || []).slice(0, 50),
     projectHistory: (store.projectHistory || []).slice(0, 150),
@@ -442,6 +445,7 @@ export async function saveBackupToFirestore(
     gatewaySettings: store.gatewaySettings,
     externalSync: store.externalSync || {},
     deliveryLogs: store.deliveryLogs.slice(0, 150),
+    waAuthSnapshot: store.waAuthSnapshot || {},
   };
 
   try {

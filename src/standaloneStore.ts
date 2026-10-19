@@ -2,13 +2,17 @@ import { AppStoreData } from './types';
 
 export const STANDALONE_DEFAULT_STORE: AppStoreData = {
   profiles: ['Oktober', 'Belum Terkategori'],
+  contactGroups: ['Jamaah Umum', 'Pengurus BDI', 'Jamaah Reguler', 'Majelis Taklim', 'Remaja Masjid'],
   hadiths: [
     {
       id: 'hd-seed-1',
       type: 'hadis',
       profileName: 'Oktober',
       sourceBook: 'HR. Bukhari',
+      sourceBookName: 'Shahih Al-Bukhari (Kitab Permulaan Wahyu)',
       hadithNumber: '1',
+      hadithDegree: 'Shahih (Muttafaqun \'Alaih)',
+      hadithLength: 'singkat',
       title: 'Segala Amal Tergantung pada Niatnya',
       arabicText: 'إِنَّمَا الأَعْمَالُ بِالنِّيَّاتِ، وَإِنَّمَا لِكُلِّ امْرِئٍ مَا نَوَى',
       translationText:
@@ -29,7 +33,10 @@ export const STANDALONE_DEFAULT_STORE: AppStoreData = {
       type: 'hadis',
       profileName: 'Oktober',
       sourceBook: 'HR. Muslim',
+      sourceBookName: 'Shahih Muslim (Kitab Al-Birr wa Ash-Shilah)',
       hadithNumber: '2564',
+      hadithDegree: 'Shahih',
+      hadithLength: 'singkat',
       title: 'Allah Melihat Hati dan Amal Hamba-Nya',
       arabicText:
         'إِنَّ اللَّهَ لاَ يَنْظُرُ إِلَى صُوَرِكُمْ وَأَمْوَالِكُمْ وَلَكِنْ يَنْظُرُ إِلَى قُلُوبِكُمْ وَأَعْمَالِكُمْ',
@@ -51,7 +58,10 @@ export const STANDALONE_DEFAULT_STORE: AppStoreData = {
       type: 'hadis',
       profileName: 'Belum Terkategori',
       sourceBook: 'HR. Tirmidzi',
+      sourceBookName: 'Jami\' At-Tirmidzi (Kitab Al-Birr wa Ash-Shilah)',
       hadithNumber: '1956',
+      hadithDegree: 'Hasan Shahih',
+      hadithLength: 'singkat',
       title: 'Senyumanmu kepada Saudaramu adalah Sedekah',
       arabicText: 'تَبَسُّمُكَ فِي وَجْهِ أَخِيكَ لَكَ صَدَقَةٌ',
       translationText:
@@ -124,6 +134,28 @@ Kepada Yth. *{nama_kontak}*,
 _Admin BDI Daily_`,
     },
   ],
+  templateVariables: [
+    { id: 'var-judul', key: '{judul}', label: 'Judul Hadis/Ayat', defaultValue: '', isSystem: true },
+    { id: 'var-arab', key: '{arab}', label: 'Teks Arab', defaultValue: '', isSystem: true },
+    { id: 'var-terjemah', key: '{terjemah}', label: 'Terjemah Resmi (Kemenag/Kitab)', defaultValue: '', isSystem: true },
+    { id: 'var-asbab', key: '{asbabul_wurud}', label: 'Asbabul Wurud (Sebab Hadis)', defaultValue: '', isSystem: true },
+    { id: 'var-ringkasan', key: '{ringkasan}', label: 'Ringkasan Singkat', defaultValue: '', isSystem: true },
+    { id: 'var-perawi', key: '{perawi}', label: 'Perawi Hadis', defaultValue: '', isSystem: true },
+    { id: 'var-kitab', key: '{kitab}', label: 'Sumber Kitab Hadis/Tafsir', defaultValue: '', isSystem: true },
+    { id: 'var-no', key: '{nomor_hadis}', label: 'Nomor Hadis (dari Kitab Sumber)', defaultValue: '', isSystem: true },
+    { id: 'var-derajat', key: '{derajat_hadis}', label: 'Derajat Hadis', defaultValue: 'Shahih', isSystem: true },
+    { id: 'var-hikmah', key: '{hikmah}', label: 'Hikmah & Pelajaran Shahih', defaultValue: '', isSystem: true },
+    { id: 'var-profil', key: '{profil}', label: 'Nama Profil Database', defaultValue: '', isSystem: true },
+    { id: 'var-nama', key: '{nama_kontak}', label: 'Nama Penerima', defaultValue: 'Sahabat BDI', isSystem: true },
+    { id: 'var-tanggal', key: '{tanggal}', label: 'Tanggal Hari Ini', defaultValue: '', isSystem: true },
+    {
+      id: 'var-footer',
+      key: '{footer_bdi}',
+      label: 'Footer / Tanda Tangan BDI',
+      defaultValue: 'BDI Daily Quran & Hadis — Tebar Ilmu Shahih Setiap Hari',
+      isSystem: false,
+    },
+  ],
   contacts: [
     {
       id: 'ct-seed-1',
@@ -150,6 +182,12 @@ _Admin BDI Daily_`,
       name: 'BDI Projek Oktober Pagi',
       status: 'stopped',
       sendTime: '06:00',
+      timezone: 'WITA',
+      scheduleFrequency: 'daily',
+      scheduleDays: [0, 1, 2, 3, 4, 5, 6],
+      targetMode: 'all',
+      targetGroups: [],
+      targetContactIds: [],
       durationMode: 'database_count',
       durationValue: 1,
       startDate: new Date().toISOString().slice(0, 10),
@@ -186,7 +224,7 @@ _Admin BDI Daily_`,
     webhookApiKey: '',
     webhookMethod: 'POST',
     customHeaders: '',
-    simulateIfOffline: true,
+    simulateIfOffline: false,
   },
   externalSync: {
     githubRepo: '',
@@ -196,6 +234,7 @@ _Admin BDI Daily_`,
     gsheetWebhookUrl: '',
     autoSyncCloud: true,
   },
+  generationHistory: [],
   deliveryLogs: [],
 };
 
@@ -212,6 +251,10 @@ export function loadStandaloneStore(): AppStoreData {
             Array.isArray(parsed.profiles) && parsed.profiles.length > 0
               ? parsed.profiles
               : STANDALONE_DEFAULT_STORE.profiles,
+          templateVariables:
+            Array.isArray(parsed.templateVariables) && parsed.templateVariables.length > 0
+              ? parsed.templateVariables
+              : STANDALONE_DEFAULT_STORE.templateVariables,
         };
       }
     }
