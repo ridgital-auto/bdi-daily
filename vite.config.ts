@@ -18,7 +18,7 @@ export default defineConfig(() => {
           name: 'BDI Daily Quran & Hadis',
           short_name: 'BDI Hadis',
           description: 'Aplikasi pengiriman Hadis Shahih & Al-Quran otomatis ke WhatsApp Headless dengan AI & jeda acak anti-blokir.',
-          theme_color: '#c026d3',
+          theme_color: '#047857',
           background_color: '#F8FAFC',
           display: 'standalone',
           start_url: './',

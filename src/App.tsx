@@ -3553,7 +3553,7 @@ export default function App() {
       <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
         <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 shadow-sm space-y-6">
           <div className="space-y-2 text-center">
-            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-600 to-pink-500 text-white flex items-center justify-center mx-auto font-bold text-lg">
+            <div className="w-12 h-12 rounded-xl bg-emerald-700 text-white flex items-center justify-center mx-auto font-bold text-lg">
               BDI
             </div>
             <h1 className="text-xl font-bold text-slate-900">BDI Daily Quran &amp; Hadis</h1>
@@ -3746,7 +3746,7 @@ export default function App() {
             e.preventDefault();
             setActiveTab('database');
           }}
-          className="text-base lg:text-lg font-bold tracking-tight whitespace-nowrap shrink-0 bg-gradient-to-r from-purple-600 to-pink-500 bg-clip-text text-transparent"
+          className="text-base lg:text-lg font-bold tracking-tight text-emerald-800 whitespace-nowrap shrink-0"
         >
           BDI Daily Quran &amp; Hadis
         </a>
