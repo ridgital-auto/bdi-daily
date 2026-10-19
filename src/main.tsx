@@ -1,26 +1,10 @@
-import {createRoot} from 'react-dom/client';
-import App from './App.tsx';
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
 import './index.css';
 
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    for (const registration of registrations) {
-      registration.update().catch(() => {});
-      if (registration.waiting) {
-        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-      }
-    }
-  });
-}
-
-if ('caches' in window) {
-  caches.keys().then((keys) => {
-    for (const key of keys) {
-      if (key.includes('workbox-precache')) {
-        caches.delete(key);
-      }
-    }
-  });
-}
-
-createRoot(document.getElementById('root')!).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

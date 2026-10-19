@@ -1,0 +1,17 @@
+{
+  "name": "BDI Daily Quran & Hadis",
+  "short_name": "BDI Hadis",
+  "description": "Aplikasi PWA Android ultra-ringan untuk kurasi database Hadis Shahih & Al-Quran berbantuan AI, manajemen kontak berkategori, dan pengiriman WhatsApp Headless otomatis dengan interval acak anti-blokir.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#047857",
+  "theme_color": "#047857",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
