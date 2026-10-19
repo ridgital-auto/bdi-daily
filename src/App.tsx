@@ -70,6 +70,7 @@ import {
 } from './googleDrive';
 import { PWAInstallButton, OfflineIndicator } from './PWAInstallButton';
 import { loadStandaloneStore, saveStandaloneStore } from './standaloneStore';
+import { api, getBackendUrl, setBackendUrl, getDefaultBackendUrl } from './api';
 
 type ActiveTab = 'database' | 'format' | 'kontak' | 'kirim' | 'sistem';
 
@@ -445,6 +446,7 @@ export default function App() {
 
   // 5. System, Logs, WA Admin, Simplified Backup (Google Account Drive Folder & Local Storage/Download/Import)
   const [adminPhoneDraft, setAdminPhoneDraft] = useState('');
+  const [backendUrlDraft, setBackendUrlDraft] = useState(getBackendUrl());
   const [webhookUrlDraft, setWebhookUrlDraft] = useState('');
   const [webhookApiKeyDraft, setWebhookApiKeyDraft] = useState('');
   const gatewayInitializedRef = useRef(false);
@@ -507,7 +509,7 @@ export default function App() {
   async function fetchState() {
     if (isRestoringBackupRef.current) return;
     try {
-      const res = await fetch('/api/state');
+      const res = await fetch(api('/api/state'));
       const contentType = res.headers.get('content-type') || '';
       if (!res.ok || !contentType.includes('application/json')) {
         throw new Error('Static GitHub Pages mode');
@@ -534,7 +536,7 @@ export default function App() {
               if (serverIsFresh && localHasUserChanges) {
                 isRestoringBackupRef.current = true;
                 try {
-                  const restoreRes = await fetch('/api/store/restore', {
+                  const restoreRes = await fetch(api('/api/store/restore'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ store: localBackup }),
@@ -589,7 +591,7 @@ export default function App() {
             // Proactively cache auth bundle ONCE per connected session
             if (!waAuthBundleSyncedRef.current) {
               waAuthBundleSyncedRef.current = true;
-              fetch('/api/gateway/auth-bundle')
+              fetch(api('/api/gateway/auth-bundle'))
                 .then((r) => r.json())
                 .then((d) => {
                   if (d?.hasBundle && d.bundle) {
@@ -615,7 +617,7 @@ export default function App() {
             if (rawBundle) {
               const parsedBundle = JSON.parse(rawBundle);
               if (parsedBundle && parsedBundle['creds.json']) {
-                fetch('/api/gateway/restore-auth', {
+                fetch(api('/api/gateway/restore-auth'), {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ bundle: parsedBundle }),
@@ -837,7 +839,7 @@ export default function App() {
     const oldName = renamingProfile.oldName;
     const newName = renamingProfile.newName.trim();
     try {
-      const res = await fetch('/api/profiles/rename', {
+      const res = await fetch(api('/api/profiles/rename'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ oldName, newName }),
@@ -897,7 +899,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/profiles/${encodeURIComponent(profileName)}`, {
+      const res = await fetch(api(`/api/profiles/${encodeURIComponent(profileName)}`), {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deleteItems: false }),
@@ -1058,7 +1060,7 @@ export default function App() {
 
   async function handleDeleteGenerationLogItem(id: string) {
     try {
-      const res = await fetch(`/api/generation-history/${encodeURIComponent(id)}`, {
+      const res = await fetch(api(`/api/generation-history/${encodeURIComponent(id)}`), {
         method: 'DELETE',
       });
       const contentType = res.headers.get('content-type') || '';
@@ -1112,7 +1114,7 @@ export default function App() {
     setAiLoading(true);
     setDuplicateMatches([]);
     try {
-      const res = await fetch('/api/ai/generate-database', {
+      const res = await fetch(api('/api/ai/generate-database'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1281,7 +1283,7 @@ export default function App() {
 
     setReplacingDuplicateIds(previewIdsToReplace);
     try {
-      const res = await fetch('/api/ai/generate-database', {
+      const res = await fetch(api('/api/ai/generate-database'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1351,7 +1353,7 @@ export default function App() {
     setAiGroupLoading(true);
     setAiGroupResult(null);
     try {
-      const res = await fetch('/api/ai/group-profile', {
+      const res = await fetch(api('/api/ai/group-profile'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1436,7 +1438,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/profiles/apply-grouping', {
+      const res = await fetch(api('/api/profiles/apply-grouping'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1528,7 +1530,7 @@ export default function App() {
     if (mode === 'recommend') setProfileRecommendedPreview(null);
 
     try {
-      const res = await fetch('/api/ai/profile-assistant', {
+      const res = await fetch(api('/api/ai/profile-assistant'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1580,7 +1582,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/profiles/apply-tidy', {
+      const res = await fetch(api('/api/profiles/apply-tidy'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1631,7 +1633,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/hadiths/save-batch', {
+      const res = await fetch(api('/api/hadiths/save-batch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1686,7 +1688,7 @@ export default function App() {
     }));
 
     try {
-      const res = await fetch('/api/hadiths/save-batch', {
+      const res = await fetch(api('/api/hadiths/save-batch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: itemsWithProfile, profileName: chosenProfile }),
@@ -1749,7 +1751,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/hadiths/${item.id}`, {
+      const res = await fetch(api(`/api/hadiths/${item.id}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(item),
@@ -1793,7 +1795,7 @@ export default function App() {
 
   async function handleDeleteSavedHadith(id: string) {
     try {
-      const res = await fetch(`/api/hadiths/${id}`, { method: 'DELETE' });
+      const res = await fetch(api(`/api/hadiths/${id}`), { method: 'DELETE' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -1838,7 +1840,7 @@ export default function App() {
       isDefault: tplIsDefault,
     };
     try {
-      const res = await fetch('/api/templates', {
+      const res = await fetch(api('/api/templates'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -1895,7 +1897,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/templates/${id}`, { method: 'DELETE' });
+      const res = await fetch(api(`/api/templates/${id}`), { method: 'DELETE' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -1947,7 +1949,7 @@ export default function App() {
     const formattedKey = `{${cleanSlug}}`;
 
     try {
-      const res = await fetch('/api/template-variables', {
+      const res = await fetch(api('/api/template-variables'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2011,7 +2013,7 @@ export default function App() {
 
   async function handleDeleteTemplateVariable(variable: TemplateVariableItem) {
     try {
-      const res = await fetch(`/api/template-variables/${variable.id}`, { method: 'DELETE' });
+      const res = await fetch(api(`/api/template-variables/${variable.id}`), { method: 'DELETE' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -2056,7 +2058,7 @@ export default function App() {
 
   async function handleResetTemplateVariables() {
     try {
-      const res = await fetch('/api/template-variables/reset', { method: 'POST' });
+      const res = await fetch(api('/api/template-variables/reset'), { method: 'POST' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -2152,7 +2154,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/contacts', {
+      const res = await fetch(api('/api/contacts'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2220,7 +2222,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/contact-groups', {
+      const res = await fetch(api('/api/contact-groups'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: grpName }),
@@ -2264,7 +2266,7 @@ export default function App() {
     const oldName = renamingContactGroup.oldName;
     const newName = renamingContactGroup.newName.trim();
     try {
-      const res = await fetch('/api/contact-groups/rename', {
+      const res = await fetch(api('/api/contact-groups/rename'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ oldName, newName }),
@@ -2319,7 +2321,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/contact-groups/${encodeURIComponent(groupName)}`, {
+      const res = await fetch(api(`/api/contact-groups/${encodeURIComponent(groupName)}`), {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fallbackGroup: 'Jamaah Umum', deleteContacts: false }),
@@ -2390,7 +2392,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/contacts/bulk-action', {
+      const res = await fetch(api('/api/contacts/bulk-action'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2488,7 +2490,7 @@ export default function App() {
   async function handleToggleContactPreference(c: ContactItem) {
     const nextPref: 'singkat' | 'detail' = c.preference === 'singkat' ? 'detail' : 'singkat';
     try {
-      const res = await fetch('/api/contacts', {
+      const res = await fetch(api('/api/contacts'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...c, preference: nextPref }),
@@ -2522,7 +2524,7 @@ export default function App() {
 
   async function handleDeleteContact(id: string) {
     try {
-      const res = await fetch(`/api/contacts/${id}`, { method: 'DELETE' });
+      const res = await fetch(api(`/api/contacts/${id}`), { method: 'DELETE' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -2568,7 +2570,7 @@ export default function App() {
       };
     });
     try {
-      const res = await fetch('/api/contacts/bulk', {
+      const res = await fetch(api('/api/contacts/bulk'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contacts: parsed }),
@@ -2686,7 +2688,7 @@ export default function App() {
       singkatTemplateId,
     };
     try {
-      const res = await fetch('/api/projects', {
+      const res = await fetch(api('/api/projects'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(projectPayload),
@@ -2763,7 +2765,7 @@ export default function App() {
     options?: { hadithId?: string; targetIndex?: number; forceResendAll?: boolean }
   ) {
     try {
-      const res = await fetch(`/api/projects/${projId}/action`, {
+      const res = await fetch(api(`/api/projects/${projId}/action`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, ...options }),
@@ -2841,7 +2843,7 @@ export default function App() {
 
   async function handleDeleteProject(projId: string) {
     try {
-      const res = await fetch(`/api/projects/${projId}`, { method: 'DELETE' });
+      const res = await fetch(api(`/api/projects/${projId}`), { method: 'DELETE' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -2869,7 +2871,7 @@ export default function App() {
 
   async function handleGlobalQueueControl(action: 'pause_all' | 'resume_all' | 'stop_all') {
     try {
-      const res = await fetch('/api/queue/control', {
+      const res = await fetch(api('/api/queue/control'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
@@ -2890,7 +2892,7 @@ export default function App() {
   async function handleSendManualBroadcast(e: React.FormEvent) {
     e.preventDefault();
     try {
-      const res = await fetch('/api/broadcast/manual', {
+      const res = await fetch(api('/api/broadcast/manual'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2928,7 +2930,7 @@ export default function App() {
       ...updated,
     };
     try {
-      const res = await fetch('/api/gateway/settings', {
+      const res = await fetch(api('/api/gateway/settings'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(merged),
@@ -2967,7 +2969,7 @@ export default function App() {
 
   async function handleConnectBaileys(mode: 'qr' | 'pairing') {
     try {
-      const res = await fetch('/api/gateway/connect-baileys', {
+      const res = await fetch(api('/api/gateway/connect-baileys'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3006,7 +3008,7 @@ export default function App() {
       adminPhoneDraft || store?.gatewaySettings.adminPhone || '6281200000000'
     );
     try {
-      const res = await fetch('/api/gateway/confirm-scan', {
+      const res = await fetch(api('/api/gateway/confirm-scan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: targetPhone }),
@@ -3054,7 +3056,7 @@ export default function App() {
       // ignore
     }
     try {
-      const res = await fetch('/api/gateway/disconnect-baileys', { method: 'POST' });
+      const res = await fetch(api('/api/gateway/disconnect-baileys'), { method: 'POST' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -3098,7 +3100,7 @@ export default function App() {
         try {
           const parsed = JSON.parse(rawBundle);
           if (parsed && parsed['creds.json']) {
-            await fetch('/api/gateway/restore-auth', {
+            await fetch(api('/api/gateway/restore-auth'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ bundle: parsed }),
@@ -3109,7 +3111,7 @@ export default function App() {
         }
       }
 
-      const res = await fetch('/api/gateway/reconnect', { method: 'POST' });
+      const res = await fetch(api('/api/gateway/reconnect'), { method: 'POST' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -3129,7 +3131,7 @@ export default function App() {
   async function handleTestSendAdmin() {
     const targetPhone = adminPhoneDraft || store?.gatewaySettings.adminPhone;
     try {
-      const res = await fetch('/api/gateway/test-send', {
+      const res = await fetch(api('/api/gateway/test-send'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: targetPhone }),
@@ -3174,7 +3176,7 @@ export default function App() {
 
   async function handleRetryLog(id: string) {
     try {
-      const res = await fetch(`/api/logs/retry/${id}`, { method: 'POST' });
+      const res = await fetch(api(`/api/logs/retry/${id}`), { method: 'POST' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -3188,7 +3190,7 @@ export default function App() {
 
   async function handleClearLogs() {
     try {
-      const res = await fetch('/api/logs/clear', { method: 'POST' });
+      const res = await fetch(api('/api/logs/clear'), { method: 'POST' });
       if (res.ok) {
         setStore((prev) => (prev ? { ...prev, deliveryLogs: [] } : prev));
         notify('success', 'Riwayat laporan pengiriman dibersihkan.');
@@ -3203,7 +3205,7 @@ export default function App() {
 
   async function handleDeleteSingleLog(logId: string) {
     try {
-      const res = await fetch(`/api/logs/${logId}`, { method: 'DELETE' });
+      const res = await fetch(api(`/api/logs/${logId}`), { method: 'DELETE' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -3249,7 +3251,7 @@ export default function App() {
       : 'semua log pesan projek';
 
     try {
-      const res = await fetch(`/api/projects/${projId}/logs/clear`, {
+      const res = await fetch(api(`/api/projects/${projId}/logs/clear`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope, targetDate }),
@@ -3313,7 +3315,7 @@ export default function App() {
 
   async function handleDeleteSingleProjectHistory(projId: string, histId: string) {
     try {
-      const res = await fetch(`/api/projects/${projId}/history/${histId}`, { method: 'DELETE' });
+      const res = await fetch(api(`/api/projects/${projId}/history/${histId}`), { method: 'DELETE' });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
@@ -3344,7 +3346,7 @@ export default function App() {
   async function applyRestoredStoreBothServerAndClient(restoredStore: AppStoreData) {
     saveStandaloneStore(restoredStore);
     try {
-      const res = await fetch('/api/store/restore', {
+      const res = await fetch(api('/api/store/restore'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ store: restoredStore }),
@@ -9471,6 +9473,36 @@ export default function App() {
 
                 {store.gatewaySettings.activeMode === 'baileys' ? (
                   <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                    {/* URL Backend: agar github.io (statis) bisa memakai server Cloud Run */}
+                    <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-2">
+                      <p className="text-xs font-bold text-slate-800">
+                        URL Backend (server WhatsApp)
+                      </p>
+                      <p className="text-[11px] text-slate-600 leading-relaxed">
+                        Koneksi WhatsApp membutuhkan server backend. Bila aplikasi dibuka via
+                        GitHub Pages, isi dengan URL Cloud Run agar QR Code &amp; Pairing Code bisa muncul.
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          value={backendUrlDraft}
+                          onChange={(e) => setBackendUrlDraft(e.target.value)}
+                          placeholder={getDefaultBackendUrl()}
+                          className="flex-1 min-h-[38px] px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs text-slate-800"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBackendUrl(backendUrlDraft);
+                            notify('success', 'URL backend disimpan. Memuat ulang...');
+                            setTimeout(() => window.location.reload(), 800);
+                          }}
+                          className="min-h-[38px] px-4 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg shrink-0"
+                        >
+                          Simpan &amp; Muat Ulang
+                        </button>
+                      </div>
+                    </div>
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-800">
                         Status Soket WA Asli:{' '}

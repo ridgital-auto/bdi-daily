@@ -1901,6 +1901,19 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
+  // CORS: izinkan frontend statis (GitHub Pages) memakai API backend ini,
+  // agar QR Code / Pairing Code WhatsApp bisa muncul dari github.io.
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', 'https://ridgital-auto.github.io');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
   // Get full store + runtime WA state
   app.get('/api/state', (_req, res) => {
     res.json({
