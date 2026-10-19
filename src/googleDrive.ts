@@ -272,10 +272,35 @@ export async function inspectGoogleDriveBackup(token: string): Promise<GoogleDri
 
 export async function saveBackupToGoogleDrive(
   store: AppStoreData,
-  label = 'Backup BDI Daily Quran & Hadis'
+  label = 'Backup BDI Daily Quran & Hadis',
+  opts: { force?: boolean } = {}
 ): Promise<GoogleDriveBackupInfo> {
   const token = await ensureGoogleDriveAccessToken();
   const info = await inspectGoogleDriveBackup(token);
+
+  // Pengaman: jangan timpa backup Drive yang lebih kaya dengan data lokal yang kosong.
+  // (Pernah kejadian: sesi baru dengan data lokal kosong menimpa backup berisi 48 kontak.)
+  if (!opts.force && info.fileId) {
+    try {
+      const checkRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${info.fileId}?alt=media`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (checkRes.ok) {
+        const parsed = await checkRes.json();
+        const remoteContacts = (parsed?.store?.contacts || parsed?.payload?.contacts || []).length;
+        const localContacts = store.contacts?.length || 0;
+        if (localContacts === 0 && remoteContacts > 0) {
+          throw new Error(
+            `Backup otomatis dibatalkan: data lokal kosong, backup Google Drive yang ada (${remoteContacts} kontak) dipertahankan.`
+          );
+        }
+      }
+    } catch (e: any) {
+      if (e?.message?.startsWith('Backup otomatis dibatalkan')) throw e;
+      // abaikan error pemeriksaan; lanjutkan upload
+    }
+  }
 
   const backupEnvelope = {
     app: 'BDI Daily Quran & Hadis',
