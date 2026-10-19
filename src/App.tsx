@@ -2999,7 +2999,7 @@ export default function App() {
     }
     notify(
       'error',
-      'Koneksi langsung Baileys membutuhkan Server Backend aktif (AI Studio / Cloud Run). Gunakan Sinkronisasi Akun Google untuk memantau dari GitHub Pages.'
+      'Koneksi WhatsApp hanya bisa dari aplikasi backend. Di tab WhatsApp, tekan tombol biru "Buka Aplikasi Backend", lalu scan QR / masukkan Pairing Code di sana.'
     );
   }
 
@@ -9501,7 +9501,23 @@ export default function App() {
                         >
                           Simpan &amp; Muat Ulang
                         </button>
+                        {getBackendUrl() ? (
+                          <button
+                            type="button"
+                            onClick={() => window.open(getBackendUrl(), '_blank', 'noopener')}
+                            className="min-h-[38px] px-4 py-1.5 bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold rounded-lg shrink-0"
+                          >
+                            Buka Aplikasi Backend
+                          </button>
+                        ) : null}
                       </div>
+                      {getBackendUrl() ? (
+                        <p className="text-[11px] text-slate-600 leading-relaxed">
+                          Scan QR Code / Pairing Code <b>hanya bisa dilakukan di aplikasi backend</b>
+                          (tombol biru di atas). Setelah WA tertaut di sana, sesi tersimpan otomatis
+                          dan pengiriman terjadwal tetap jalan.
+                        </p>
+                      ) : null}
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-slate-800">
