@@ -762,6 +762,24 @@ export default function App() {
         } catch {
           // ignore initial folder check error
         }
+        // Otomatis tarik data dari Google Drive bila data lokal masih kosong
+        // (menggantikan tarikan otomatis Firestore pada versi sebelumnya).
+        try {
+          const localContacts = store?.contacts?.length || 0;
+          if (localContacts === 0) {
+            const driveData = await loadBackupFromGoogleDrive();
+            if (driveData && (driveData.store.contacts?.length || 0) > 0) {
+              const applied = await applyRestoredStoreBothServerAndClient(driveData.store);
+              setDriveBackupInfo(driveData.info);
+              notify(
+                'success',
+                `Data dipulihkan otomatis dari Google Drive: ${applied.contacts?.length || 0} kontak & ${applied.hadiths?.length || 0} materi.`
+              );
+            }
+          }
+        } catch {
+          // abaikan; pengguna bisa restore manual dari tab Sistem
+        }
       }
       notify(
         'success',
