@@ -1913,7 +1913,7 @@ async function startServer() {
     });
   });
 
-  // Replace or restore full store (from local JSON import or Firebase Cloud Restore)
+  // Replace or restore full store (from local JSON import or Google Drive restore)
   app.post('/api/store/restore', (req, res) => {
     const incoming = req.body?.store;
     if (!incoming || typeof incoming !== 'object') {

@@ -45,7 +45,6 @@ import {
   Calendar,
   ListFilter,
 } from 'lucide-react';
-import { User } from 'firebase/auth';
 import {
   AppStoreData,
   HadithItem,
@@ -59,18 +58,16 @@ import {
 } from './types';
 import {
   loginWithGoogle,
-  logoutFirebase,
-  subscribeAuthState,
-  subscribeRealtimeCloudSync,
-  saveBackupToFirestore,
-  loadBackupFromFirestore,
+  logoutGoogle,
+  restoreGoogleSession,
   saveBackupToGoogleDrive,
   loadBackupFromGoogleDrive,
   inspectGoogleDriveBackup,
   ensureGoogleDriveAccessToken,
   getAccessToken,
   GoogleDriveBackupInfo,
-} from './firebase';
+  GoogleUser,
+} from './googleDrive';
 import { PWAInstallButton, OfflineIndicator } from './PWAInstallButton';
 import { loadStandaloneStore, saveStandaloneStore } from './standaloneStore';
 
@@ -254,7 +251,7 @@ export default function App() {
   // ==========================================
   // FIRST-ENTRY GOOGLE LOGIN & SAVE LOGIN INFO
   // ==========================================
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [googleUser, setGoogleUser] = useState<GoogleUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [saveLoginInfo, setSaveLoginInfo] = useState(true);
   const [savedAccountSession, setSavedAccountSession] = useState<{
@@ -272,7 +269,8 @@ export default function App() {
   const [loginBusy, setLoginBusy] = useState(false);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudInfo, setCloudInfo] = useState<string | null>(null);
-  const lastRemoteTimestampRef = useRef<number>(0);
+  // Debounce backup otomatis ke Google Drive: maksimal 1x per 2 menit
+  const lastDriveAutoBackupRef = useRef<number>(0);
   const initialSyncDoneRef = useRef<boolean>(false);
   const isRestoringBackupRef = useRef<boolean>(false);
   const waAuthBundleSyncedRef = useRef<boolean>(false);
@@ -682,71 +680,22 @@ export default function App() {
   useEffect(() => {
     fetchState();
     const timer = setInterval(fetchState, 6000);
-    const unsub = subscribeAuthState((u, token) => {
-      setFirebaseUser(u);
-      setDriveConnected(Boolean(token));
-      setAuthReady(true);
-      if (u) {
-        const info = {
-          email: u.email || 'admin@bdi.id',
-          displayName: u.displayName || 'Admin BDI',
-          uid: u.uid,
-        };
-        setSavedAccountSession(info);
-        try {
-          localStorage.setItem('bdi_saved_account', JSON.stringify(info));
-        } catch {
-          // ignore
-        }
-      }
-    });
+    // Pulihkan info akun Google dari sesi sebelumnya (token perlu login ulang tiap sesi)
+    const saved = restoreGoogleSession();
+    setGoogleUser(saved);
+    setDriveConnected(false);
+    setAuthReady(true);
+    if (saved) {
+      setSavedAccountSession({
+        email: saved.email || 'admin@bdi.id',
+        displayName: saved.displayName || 'Admin BDI',
+        uid: saved.uid,
+      });
+    }
     return () => {
       clearInterval(timer);
-      unsub();
     };
   }, []);
-
-  useEffect(() => {
-    if (!firebaseUser) return;
-    // Subscribe to Real-Time Cloud Sync when logged into Google Account
-    const unsubSnap = subscribeRealtimeCloudSync(firebaseUser.uid, async (remote) => {
-      if (remote.updatedAtMs <= lastRemoteTimestampRef.current) return;
-      lastRemoteTimestampRef.current = remote.updatedAtMs;
-      if (remote.payload && Array.isArray(remote.payload.hadiths)) {
-        // Also sync remote backup to the backend server so the 2.5s poll doesn't overwrite it with default data
-        isRestoringBackupRef.current = true;
-        try {
-          const normalizedPayload: AppStoreData = {
-            ...remote.payload,
-            templateVariables:
-              Array.isArray(remote.payload.templateVariables) &&
-              remote.payload.templateVariables.length > 0
-                ? remote.payload.templateVariables
-                : DEFAULT_TEMPLATE_VARIABLES,
-          };
-          saveStandaloneStore(normalizedPayload);
-          const res = await fetch('/api/store/restore', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ store: normalizedPayload }),
-          });
-          const contentType = res.headers.get('content-type') || '';
-          if (res.ok && contentType.includes('application/json')) {
-            const data = await res.json();
-            setStore(data.store);
-          } else {
-            setStore(normalizedPayload);
-          }
-        } catch {
-          setStore(remote.payload);
-        } finally {
-          isRestoringBackupRef.current = false;
-        }
-      }
-      setCloudInfo(`Sinkronisasi Real-Time Aktif (${remote.updatedAtText})`);
-    });
-    return () => unsubSnap();
-  }, [firebaseUser]);
 
   async function pushAutoCloudSync(nextStore: AppStoreData, note = 'Auto-Sync BDI') {
     // Ensure WA auth bundle is packed if available
@@ -765,7 +714,7 @@ export default function App() {
       }
     }
 
-    // Always keep LocalStorage snapshot updated automatically
+    // Selalu simpan snapshot LocalStorage otomatis
     try {
       const nowText = new Date().toLocaleString('id-ID');
       localStorage.setItem('bdi_local_backup_snapshot', JSON.stringify(enrichedStore));
@@ -775,13 +724,22 @@ export default function App() {
       // ignore storage quota
     }
 
-    if (!firebaseUser) return;
-    try {
-      lastRemoteTimestampRef.current = Date.now() + 2000;
-      await saveBackupToFirestore(enrichedStore, note);
-      setCloudInfo(`Auto-Sync Akun Google Aktif (${new Date().toLocaleTimeString('id-ID')})`);
-    } catch {
-      // ignore background auto-sync error
+    // Backup otomatis ke Google Drive (debounce: maksimal 1x per 2 menit),
+    // hanya jika sesi Drive masih aktif — tanpa memaksa popup login.
+    if (getAccessToken()) {
+      const now = Date.now();
+      if (now - lastDriveAutoBackupRef.current > 120000) {
+        lastDriveAutoBackupRef.current = now;
+        saveBackupToGoogleDrive(enrichedStore, note)
+          .then(() => {
+            setCloudInfo(
+              `Auto-Sync Google Drive Aktif (${new Date().toLocaleTimeString('id-ID')})`
+            );
+          })
+          .catch(() => {
+            // abaikan error auto-sync latar; backup manual tetap tersedia
+          });
+      }
     }
   }
 
@@ -794,11 +752,9 @@ export default function App() {
         displayName: user.displayName || 'Admin BDI',
         uid: user.uid,
       };
+      setGoogleUser(user);
       setSavedAccountSession(info);
       setDriveConnected(Boolean(accessToken));
-      if (saveLoginInfo) {
-        localStorage.setItem('bdi_saved_account', JSON.stringify(info));
-      }
       if (accessToken) {
         try {
           const dInfo = await inspectGoogleDriveBackup(accessToken);
@@ -809,30 +765,18 @@ export default function App() {
       }
       notify(
         'success',
-        `Selamat datang ${info.displayName}! Akun Google (${info.email}) terhubung ke AI, Sinkronisasi Real-Time & Folder Google Drive.`
+        `Selamat datang ${info.displayName}! Akun Google (${info.email}) terhubung. Backup otomatis ke folder Google Drive aktif.`
       );
-    } catch {
-      const fallbackInfo = {
-        email: 'ridgitalstudio@gmail.com',
-        displayName: 'Admin BDI (Google Account)',
-        uid: 'bdi-admin-primary',
-      };
-      setSavedAccountSession(fallbackInfo);
-      if (saveLoginInfo) {
-        localStorage.setItem('bdi_saved_account', JSON.stringify(fallbackInfo));
-      }
-      notify(
-        'success',
-        `Login Akun Google (${fallbackInfo.email}) berhasil disimpan. Sinkronisasi Real-Time antar perangkat aktif.`
-      );
+    } catch (err: any) {
+      notify('error', err?.message || 'Login Google gagal. Coba lagi.');
     } finally {
       setLoginBusy(false);
     }
   }
 
   async function handleFullLogout() {
-    await logoutFirebase();
-    setFirebaseUser(null);
+    await logoutGoogle();
+    setGoogleUser(null);
     setDriveConnected(false);
     setDriveBackupInfo(null);
     setSavedAccountSession(null);
@@ -1165,7 +1109,7 @@ export default function App() {
           profileName: targetProf,
           allowDuplicates: aiAllowDuplicates,
           excludeRefs,
-          userEmail: savedAccountSession?.email || firebaseUser?.email || '',
+          userEmail: savedAccountSession?.email || googleUser?.email || '',
         }),
       });
       const contentType = res.headers.get('content-type') || '';
@@ -1334,7 +1278,7 @@ export default function App() {
           profileName: targetProf,
           allowDuplicates: false,
           excludeRefs,
-          userEmail: savedAccountSession?.email || firebaseUser?.email || '',
+          userEmail: savedAccountSession?.email || googleUser?.email || '',
         }),
       });
       const contentType = res.headers.get('content-type') || '';
@@ -3437,22 +3381,10 @@ export default function App() {
       );
       notify(
         'success',
-        `Backup berhasil disimpan ke Google Drive pada folder "${info.folderName}" (${info.fileName}) & disinkronkan ke Akun Google!`
+        `Backup berhasil disimpan ke Google Drive pada folder "${info.folderName}" (${info.fileName}).`
       );
     } catch (err: any) {
-      // Fallback: if popup is blocked, try saving directly to Firestore Cloud tied to Google Account
-      try {
-        await saveBackupToFirestore(store, backupLabelInput);
-        setCloudInfo(
-          `Tersimpan di Cloud Akun Google pada ${new Date().toLocaleTimeString('id-ID')}`
-        );
-        notify(
-          'success',
-          'Backup berhasil disimpan ke Cloud Akun Google! (Klik "Buka / Izin Folder Google Drive" jika ingin menyalin ke Drive).'
-        );
-      } catch {
-        notify('error', err?.message || 'Gagal mencadangkan ke Akun Google.');
-      }
+      notify('error', err?.message || 'Gagal mencadangkan ke Google Drive.');
     } finally {
       setCloudBusy(false);
     }
@@ -3464,33 +3396,16 @@ export default function App() {
       let restoredStore: AppStoreData | null = null;
       let restoredSourceLabel = '';
 
-      if (getAccessToken()) {
-        const driveData = await loadBackupFromGoogleDrive();
-        if (driveData) {
-          restoredStore = driveData.store;
-          setDriveBackupInfo(driveData.info);
-          restoredSourceLabel = `Folder Google Drive "${driveData.info.folderName}" (${driveData.info.modifiedTime || ''})`;
-        }
+      const driveData = await loadBackupFromGoogleDrive();
+      if (driveData) {
+        restoredStore = driveData.store;
+        setDriveBackupInfo(driveData.info);
+        setDriveConnected(true);
+        restoredSourceLabel = `Folder Google Drive "${driveData.info.folderName}" (${driveData.info.modifiedTime || ''})`;
       }
 
       if (!restoredStore) {
-        const snap = await loadBackupFromFirestore();
-        if (snap) {
-          restoredStore = snap.payload;
-          restoredSourceLabel = `Cloud Akun Google "${snap.backupLabel}" (${snap.updatedAtText})`;
-        } else {
-          const driveData = await loadBackupFromGoogleDrive();
-          if (driveData) {
-            restoredStore = driveData.store;
-            setDriveBackupInfo(driveData.info);
-            setDriveConnected(true);
-            restoredSourceLabel = `Folder Google Drive "${driveData.info.folderName}"`;
-          }
-        }
-      }
-
-      if (!restoredStore) {
-        notify('error', 'Belum ada file backup ditemukan di Akun Google / Google Drive Anda.');
+        notify('error', 'Belum ada file backup ditemukan di Google Drive Anda.');
         return;
       }
 
@@ -3501,7 +3416,7 @@ export default function App() {
         `Restore berhasil dari ${restoredSourceLabel}: ${applied.hadiths?.length || 0} materi & ${applied.contacts?.length || 0} kontak dipulihkan.`
       );
     } catch (err: any) {
-      notify('error', err?.message || 'Gagal memulihkan data dari Akun Google.');
+      notify('error', err?.message || 'Gagal memulihkan data dari Google Drive.');
     } finally {
       setCloudBusy(false);
     }
@@ -3584,11 +3499,11 @@ export default function App() {
   // =========================================================
   // GATE 1: FIRST-ENTRY GOOGLE ACCOUNT LOGIN & SYNC SCREEN
   // =========================================================
-  const activeAccount = firebaseUser
+  const activeAccount = googleUser
     ? {
-        email: firebaseUser.email || 'admin@bdi.id',
-        displayName: firebaseUser.displayName || 'Admin BDI',
-        uid: firebaseUser.uid,
+        email: googleUser.email || 'admin@bdi.id',
+        displayName: googleUser.displayName || 'Admin BDI',
+        uid: googleUser.uid,
       }
     : savedAccountSession;
 
@@ -3602,7 +3517,7 @@ export default function App() {
             </div>
             <h1 className="text-xl font-bold text-slate-900">BDI Daily Quran &amp; Hadis</h1>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Masuk dengan <strong>Akun Google</strong> untuk menghubungkan Generator AI Hadis Shahih, sinkronisasi real-time antar perangkat (Android &amp; Browser Laptop), serta integrasi Cloud Firebase, GitHub &amp; Google Sheets.
+              Masuk dengan <strong>Akun Google</strong> untuk menghubungkan Generator AI Hadis Shahih serta backup &amp; sinkronisasi otomatis via Google Drive.
             </p>
           </div>
 
@@ -3616,7 +3531,7 @@ export default function App() {
             <div className="flex items-start gap-2.5">
               <Sparkles className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
               <span>
-                <strong>Terkoneksi ke AI &amp; Cloud:</strong> Otomatis mengatur koneksi ke Gemini AI, Firebase Firestore, GitHub &amp; Google Sheets.
+                <strong>Terkoneksi ke AI &amp; Cloud:</strong> Otomatis mengatur koneksi ke Gemini AI &amp; backup Google Drive.
               </span>
             </div>
           </div>
@@ -3656,7 +3571,7 @@ export default function App() {
       <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
         <div className="text-center space-y-2">
           <p className="text-base font-bold text-slate-900">BDI Daily Quran &amp; Hadis</p>
-          <p className="text-xs text-slate-600">Memuat sinkronisasi real-time &amp; database...</p>
+          <p className="text-xs text-slate-600">Memuat backup Google Drive &amp; database...</p>
         </div>
       </div>
     );
@@ -4220,7 +4135,7 @@ export default function App() {
                       <strong>Simpan &amp; Timpa 1 File Rapi:</strong> Di dalam folder tersebut, aplikasi menyimpan file <code>bdi-daily-hadis-backup.json</code> yang berisi seluruh profil database hadis, format kirim, kontak jamaah, dan jadwal BDI Projek.
                     </li>
                     <li>
-                      <strong>Sinkronisasi Real-Time Lintas Perangkat:</strong> Selain disimpan di folder Google Drive, aplikasi juga menyinkronkan data secara real-time antar HP Android dan browser laptop yang login dengan akun Google yang sama.
+                      <strong>Backup Otomatis Google Drive:</strong> Seluruh database tersimpan aman di folder Google Drive akun Anda dan otomatis diperbarui maksimal 1x per 2 menit saat ada perubahan data.
                     </li>
                   </ol>
                 </div>
@@ -9406,17 +9321,17 @@ export default function App() {
         )}
 
         {/* ============================================================
-            TAB 5: WA ADMIN, CLOUD SYNC (FIRESTORE / GITHUB / GSHEET) & LAPORAN
+            TAB 5: WA ADMIN, BACKUP GOOGLE DRIVE & LAPORAN
            ============================================================ */}
         {activeTab === 'sistem' && (
           <div className="space-y-8">
             <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-slate-200 pb-4">
               <div>
                 <h1 className="text-xl lg:text-2xl font-bold text-slate-900">
-                  05. WA Admin Headless, Cloud Sync (Firestore / GitHub / GSheet) &amp; Laporan
+                  05. WA Admin Headless, Backup Google Drive &amp; Laporan
                 </h1>
                 <p className="text-sm text-slate-600 mt-1">
-                  Tautkan WA Admin dengan QR Code / Pairing Code instan, dan hubungkan backup real-time ke Firebase Firestore, GitHub Repository, atau Google Sheets.
+                  Tautkan WA Admin dengan QR Code / Pairing Code instan, dan backup otomatis ke Google Drive.
                 </p>
               </div>
               <button
