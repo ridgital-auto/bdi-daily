@@ -105,7 +105,7 @@ export async function loginWithGoogle(
           else reject(new Error('Login Google dibatalkan.'));
         },
       });
-      client.requestAccessToken({ prompt: 'select_account' });
+      client.requestAccessToken({ prompt: 'select_account consent' });
     } catch (e: any) {
       reject(new Error(e?.message || 'Gagal membuka login Google.'));
     }
