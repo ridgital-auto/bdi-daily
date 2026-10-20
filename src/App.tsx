@@ -387,6 +387,8 @@ export default function App() {
   const [contactPrefFilter, setContactPrefFilter] = useState<'all' | 'singkat' | 'detail'>('all');
   const [contactGroupFilter, setContactGroupFilter] = useState<string>('all');
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
+  const [contactPage, setContactPage] = useState(1);
+  const [showContactModal, setShowContactModal] = useState(false);
   const [contactName, setContactName] = useState('');
   const [contactPhone, setContactPhone] = useState('');
   const [contactPreference, setContactPreference] = useState<'singkat' | 'detail'>('singkat');
@@ -2147,6 +2149,31 @@ export default function App() {
     );
   }
 
+  function closeContactModal() {
+    setShowContactModal(false);
+    setEditingContactId(null);
+    setContactName('');
+    setContactPhone('');
+    setContactPreference('singkat');
+    setContactGroup('Jamaah Umum');
+    setContactNotes('');
+  }
+
+  function openAddContactModal() {
+    closeContactModal();
+    setShowContactModal(true);
+  }
+
+  function openEditContactModal(c: ContactItem) {
+    setEditingContactId(c.id);
+    setContactName(c.name);
+    setContactPhone(c.phone);
+    setContactPreference(c.preference);
+    setContactGroup(c.groupTag || 'Jamaah Umum');
+    setContactNotes(c.notes || '');
+    setShowContactModal(true);
+  }
+
   async function handleSaveContact(e: React.FormEvent) {
     e.preventDefault();
     if (!contactName.trim() || !contactPhone.trim()) {
@@ -2211,6 +2238,7 @@ export default function App() {
     setContactName('');
     setContactPhone('');
     setContactNotes('');
+    setShowContactModal(false);
     notify('success', 'Data kontak jamaah berhasil disimpan.');
   }
 
@@ -3689,6 +3717,15 @@ export default function App() {
       (c.notes || '').toLowerCase().includes(q)
     );
   });
+
+  // Paginasi daftar kontak: 10 per halaman agar tidak scroll panjang
+  const CONTACTS_PER_PAGE = 10;
+  const totalContactPages = Math.max(1, Math.ceil(filteredContacts.length / CONTACTS_PER_PAGE));
+  const safeContactPage = Math.min(Math.max(1, contactPage), totalContactPages);
+  const pagedContacts = filteredContacts.slice(
+    (safeContactPage - 1) * CONTACTS_PER_PAGE,
+    safeContactPage * CONTACTS_PER_PAGE
+  );
 
   const filteredLogs = store.deliveryLogs.filter((l) => {
     if (logStatusFilter === 'all') return true;
@@ -6645,10 +6682,18 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2 self-start shrink-0">
                 <button
                   type="button"
-                  onClick={() => handleExportContacts('csv')}
+                  onClick={openAddContactModal}
                   className="min-h-[42px] px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap shrink-0"
                 >
-                  <Download className="w-4 h-4" />
+                  <Plus className="w-4 h-4" />
+                  <span>Tambah Kontak</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportContacts('csv')}
+                  className="min-h-[42px] px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-4 h-4 text-emerald-700" />
                   <span>Export Kontak (.CSV / Excel)</span>
                 </button>
                 <button
@@ -6710,141 +6755,6 @@ export default function App() {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               {/* LEFT COLUMN: TAMBAH/EDIT KONTAK + MANAJEMEN GRUP KONTAK */}
               <div className="lg:col-span-4 space-y-5">
-                <form
-                  onSubmit={handleSaveContact}
-                  className="bg-white border border-slate-200 rounded-xl p-5 space-y-4"
-                >
-                  <h2 className="text-base font-bold text-slate-900">
-                    {editingContactId ? 'Edit Kontak Jamaah' : 'Tambah Kontak Penerima Baru'}
-                  </h2>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Nama Lengkap / Sapaan
-                    </label>
-                    <input
-                      type="text"
-                      value={contactName}
-                      onChange={(e) => setContactName(e.target.value)}
-                      placeholder="Contoh: Bapak H. Abdullah"
-                      className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Nomor WhatsApp (Otomatis ke 628...)
-                    </label>
-                    <input
-                      type="tel"
-                      value={contactPhone}
-                      onChange={(e) => setContactPhone(e.target.value)}
-                      placeholder="081234567890"
-                      className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm font-mono-num"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Kategori Format Penerima
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setContactPreference('singkat')}
-                        className={`min-h-[42px] px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
-                          contactPreference === 'singkat'
-                            ? 'bg-emerald-700 text-white border-emerald-700'
-                            : 'bg-slate-50 text-slate-700 border-slate-300'
-                        }`}
-                      >
-                        Penerima Singkat
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setContactPreference('detail')}
-                        className={`min-h-[42px] px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
-                          contactPreference === 'detail'
-                            ? 'bg-emerald-700 text-white border-emerald-700'
-                            : 'bg-slate-50 text-slate-700 border-slate-300'
-                        }`}
-                      >
-                        Penerima Detail
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="block text-xs font-semibold text-slate-700">
-                      Kelompok / Grup Jamaah
-                    </label>
-                    <select
-                      value={
-                        allContactGroups.includes(contactGroup) ? contactGroup : '__CUSTOM__'
-                      }
-                      onChange={(e) => {
-                        if (e.target.value === '__CUSTOM__') {
-                          setContactGroup('');
-                        } else {
-                          setContactGroup(e.target.value);
-                        }
-                      }}
-                      className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold text-slate-800"
-                    >
-                      {allContactGroups.map((grp) => (
-                        <option key={grp} value={grp}>
-                          Grup: {grp}
-                        </option>
-                      ))}
-                      <option value="__CUSTOM__">+ Ketik Nama Grup Baru Manual...</option>
-                    </select>
-                    {!allContactGroups.includes(contactGroup) && (
-                      <input
-                        type="text"
-                        value={contactGroup}
-                        onChange={(e) => setContactGroup(e.target.value)}
-                        placeholder="Ketik nama grup baru (contoh: Jamaah Subuh)..."
-                        className="w-full min-h-[40px] px-3 py-2 bg-white border border-emerald-500 rounded-lg text-xs"
-                      />
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Catatan Kontak (Opsional)
-                    </label>
-                    <input
-                      type="text"
-                      value={contactNotes}
-                      onChange={(e) => setContactNotes(e.target.value)}
-                      placeholder="Contoh: Pengurus DKM / Donatur"
-                      className="w-full min-h-[40px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs"
-                    />
-                  </div>
-
-                  <div className="flex gap-2 pt-1">
-                    {editingContactId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingContactId(null);
-                          setContactName('');
-                          setContactPhone('');
-                          setContactNotes('');
-                        }}
-                        className="min-h-[44px] px-4 py-2 bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg"
-                      >
-                        Batal
-                      </button>
-                    )}
-                    <button
-                      type="submit"
-                      className="flex-1 min-h-[44px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg"
-                    >
-                      {editingContactId ? 'Simpan Perubahan Kontak' : 'Tambah ke Daftar Kontak'}
-                    </button>
-                  </div>
-                </form>
 
                 {/* PANEL KELOLA & TAMBAH GRUP KONTAK */}
                 <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3.5">
@@ -6919,7 +6829,7 @@ export default function App() {
 
                   <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
                     <div
-                      onClick={() => setContactGroupFilter('all')}
+                      onClick={() => { setContactGroupFilter('all'); setContactPage(1); }}
                       className={`cursor-pointer p-2.5 rounded-lg border flex items-center justify-between text-xs transition-colors ${
                         contactGroupFilter === 'all'
                           ? 'bg-emerald-50/90 border-emerald-700 font-bold text-slate-900'
@@ -6940,7 +6850,7 @@ export default function App() {
                       return (
                         <div
                           key={grp}
-                          onClick={() => setContactGroupFilter(grp)}
+                          onClick={() => { setContactGroupFilter(grp); setContactPage(1); }}
                           className={`cursor-pointer p-2.5 rounded-lg border flex items-center justify-between gap-2 text-xs transition-colors ${
                             isSelected
                               ? 'bg-emerald-50/90 border-emerald-700 font-bold text-slate-900'
@@ -6991,7 +6901,7 @@ export default function App() {
                   <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
                     <button
                       type="button"
-                      onClick={() => setContactPrefFilter('all')}
+                      onClick={() => { setContactPrefFilter('all'); setContactPage(1); }}
                       className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
                         contactPrefFilter === 'all'
                           ? 'bg-white text-slate-900 shadow-xs'
@@ -7002,7 +6912,7 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setContactPrefFilter('singkat')}
+                      onClick={() => { setContactPrefFilter('singkat'); setContactPage(1); }}
                       className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
                         contactPrefFilter === 'singkat'
                           ? 'bg-white text-slate-900 shadow-xs'
@@ -7013,7 +6923,7 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setContactPrefFilter('detail')}
+                      onClick={() => { setContactPrefFilter('detail'); setContactPage(1); }}
                       className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
                         contactPrefFilter === 'detail'
                           ? 'bg-white text-slate-900 shadow-xs'
@@ -7027,7 +6937,7 @@ export default function App() {
                   <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                     <select
                       value={contactGroupFilter}
-                      onChange={(e) => setContactGroupFilter(e.target.value)}
+                      onChange={(e) => { setContactGroupFilter(e.target.value); setContactPage(1); }}
                       className="min-h-[40px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold text-slate-800"
                     >
                       <option value="all">Semua Grup ({allContactGroups.length})</option>
@@ -7043,7 +6953,10 @@ export default function App() {
                       <input
                         type="text"
                         value={contactSearch}
-                        onChange={(e) => setContactSearch(e.target.value)}
+                        onChange={(e) => {
+                          setContactSearch(e.target.value);
+                          setContactPage(1);
+                        }}
                         placeholder="Cari nama, WA, atau grup..."
                         className="w-full min-h-[40px] pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs"
                       />
@@ -7194,7 +7107,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="divide-y divide-slate-200 border-t border-slate-200">
-                    {filteredContacts.map((c) => {
+                    {pagedContacts.map((c) => {
                       const isChecked = selectedContactIds.includes(c.id);
                       return (
                         <div
@@ -7259,14 +7172,7 @@ export default function App() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                setEditingContactId(c.id);
-                                setContactName(c.name);
-                                setContactPhone(c.phone);
-                                setContactPreference(c.preference);
-                                setContactGroup(c.groupTag || 'Jamaah Umum');
-                                setContactNotes(c.notes || '');
-                              }}
+                              onClick={() => openEditContactModal(c)}
                               className="min-h-[36px] px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg"
                             >
                               Edit
@@ -7284,11 +7190,228 @@ export default function App() {
                     })}
                   </div>
                 )}
+
+                {/* NAVIGASI HALAMAN KONTAK */}
+                {filteredContacts.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200">
+                    <p className="text-xs text-slate-600">
+                      Halaman{' '}
+                      <span className="font-bold text-slate-900">{safeContactPage}</span> dari{' '}
+                      <span className="font-bold text-slate-900">{totalContactPages}</span>
+                      <span className="text-slate-400">
+                        {' '}
+                        · kontak {(safeContactPage - 1) * CONTACTS_PER_PAGE + 1}–
+                        {Math.min(safeContactPage * CONTACTS_PER_PAGE, filteredContacts.length)}{' '}
+                        dari {filteredContacts.length}
+                      </span>
+                    </p>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={safeContactPage <= 1}
+                        onClick={() => setContactPage(Math.max(1, safeContactPage - 1))}
+                        className="min-h-[36px] px-3 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 text-xs font-semibold rounded-lg"
+                      >
+                        ← Sebelumnya
+                      </button>
+                      {Array.from({ length: totalContactPages }, (_, i) => i + 1)
+                        .filter(
+                          (p) =>
+                            p === 1 ||
+                            p === totalContactPages ||
+                            Math.abs(p - safeContactPage) <= 1
+                        )
+                        .reduce<(number | 'dots')[]>((acc, p, i, arr) => {
+                          if (i > 0 && p - (arr[i - 1] as number) > 1) acc.push('dots');
+                          acc.push(p);
+                          return acc;
+                        }, [])
+                        .map((p, i) =>
+                          p === 'dots' ? (
+                            <span key={`dots-${i}`} className="px-1 text-slate-400 text-xs">
+                              …
+                            </span>
+                          ) : (
+                            <button
+                              key={p}
+                              type="button"
+                              onClick={() => setContactPage(p as number)}
+                              className={`min-h-[36px] min-w-[36px] px-2 py-1.5 text-xs font-semibold rounded-lg ${
+                                p === safeContactPage
+                                  ? 'bg-emerald-700 text-white'
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                              }`}
+                            >
+                              {p}
+                            </button>
+                          )
+                        )}
+                      <button
+                        type="button"
+                        disabled={safeContactPage >= totalContactPages}
+                        onClick={() =>
+                          setContactPage(Math.min(totalContactPages, safeContactPage + 1))
+                        }
+                        className="min-h-[36px] px-3 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed text-slate-700 text-xs font-semibold rounded-lg"
+                      >
+                        Selanjutnya →
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         )}
 
+            {/* POPUP TAMBAH/EDIT KONTAK JAMAAH */}
+            {showContactModal && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+                onClick={closeContactModal}
+              >
+                <div
+                  className="bg-white rounded-xl p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <form onSubmit={handleSaveContact} className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-base font-bold text-slate-900">
+                      {editingContactId ? 'Edit Kontak Jamaah' : 'Tambah Kontak Penerima Baru'}
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={closeContactModal}
+                      className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded-lg"
+                      title="Tutup"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Nama Lengkap / Sapaan
+                    </label>
+                    <input
+                      type="text"
+                      value={contactName}
+                      onChange={(e) => setContactName(e.target.value)}
+                      placeholder="Contoh: Bapak H. Abdullah"
+                      className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Nomor WhatsApp (Otomatis ke 628...)
+                    </label>
+                    <input
+                      type="tel"
+                      value={contactPhone}
+                      onChange={(e) => setContactPhone(e.target.value)}
+                      placeholder="081234567890"
+                      className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm font-mono-num"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Kategori Format Penerima
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setContactPreference('singkat')}
+                        className={`min-h-[42px] px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
+                          contactPreference === 'singkat'
+                            ? 'bg-emerald-700 text-white border-emerald-700'
+                            : 'bg-slate-50 text-slate-700 border-slate-300'
+                        }`}
+                      >
+                        Penerima Singkat
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setContactPreference('detail')}
+                        className={`min-h-[42px] px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${
+                          contactPreference === 'detail'
+                            ? 'bg-emerald-700 text-white border-emerald-700'
+                            : 'bg-slate-50 text-slate-700 border-slate-300'
+                        }`}
+                      >
+                        Penerima Detail
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Kelompok / Grup Jamaah
+                    </label>
+                    <select
+                      value={
+                        allContactGroups.includes(contactGroup) ? contactGroup : '__CUSTOM__'
+                      }
+                      onChange={(e) => {
+                        if (e.target.value === '__CUSTOM__') {
+                          setContactGroup('');
+                        } else {
+                          setContactGroup(e.target.value);
+                        }
+                      }}
+                      className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold text-slate-800"
+                    >
+                      {allContactGroups.map((grp) => (
+                        <option key={grp} value={grp}>
+                          Grup: {grp}
+                        </option>
+                      ))}
+                      <option value="__CUSTOM__">+ Ketik Nama Grup Baru Manual...</option>
+                    </select>
+                    {!allContactGroups.includes(contactGroup) && (
+                      <input
+                        type="text"
+                        value={contactGroup}
+                        onChange={(e) => setContactGroup(e.target.value)}
+                        placeholder="Ketik nama grup baru (contoh: Jamaah Subuh)..."
+                        className="w-full min-h-[40px] px-3 py-2 bg-white border border-emerald-500 rounded-lg text-xs"
+                      />
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Catatan Kontak (Opsional)
+                    </label>
+                    <input
+                      type="text"
+                      value={contactNotes}
+                      onChange={(e) => setContactNotes(e.target.value)}
+                      placeholder="Contoh: Pengurus DKM / Donatur"
+                      className="w-full min-h-[40px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs"
+                    />
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={closeContactModal}
+                      className="min-h-[44px] px-4 py-2 bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg"
+                    >
+                      Batal
+                    </button>
+                    <button
+                      type="submit"
+                      className="flex-1 min-h-[44px] px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg"
+                    >
+                      {editingContactId ? 'Simpan Perubahan Kontak' : 'Tambah ke Daftar Kontak'}
+                    </button>
+                  </div>
+                  </form>
+                </div>
+              </div>
+            )}
         {/* ============================================================
             TAB 4: BDI PROJEK (MULTI-PROJECT SCHEDULER, PAUSE/RESUME/STOP, HISTORI & MANUAL)
            ============================================================ */}
