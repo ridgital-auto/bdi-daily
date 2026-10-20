@@ -128,7 +128,7 @@ export interface ProjectRunHistory {
   hadithTitle: string;
   profileName: string;
   triggeredAt: string;
-  triggerType: 'auto' | 'manual_trigger' | 'pause' | 'resume' | 'stop';
+  triggerType: 'auto' | 'manual_trigger' | 'pause' | 'resume' | 'stop' | 'manual_once' | 'schedule_activated';
   contactCount: number;
   notes: string;
 }
@@ -183,6 +183,7 @@ export interface DeliveryLog {
   messageType: 'scheduled' | 'manual' | 'test';
   renderedMessage: string;
   status: 'queued' | 'sending' | 'sent' | 'failed' | 'paused' | 'stopped';
+  tempRetryCount?: number;
   randomDelayAppliedSec: number;
   remainingMsWhenPaused?: number;
   scheduledAtMs: number;
@@ -1589,12 +1590,23 @@ async function processQueueTick() {
         dueItem.status = 'sent';
         dueItem.errorMessage = undefined;
       } else if ((result as any).temporary) {
-        // Temporary socket reconnect: do NOT mark as failed! Keep queued with a 15-second delay
-        dueItem.status = 'queued';
-        dueItem.scheduledAtMs = Date.now() + 15000;
-        dueItem.errorMessage = undefined;
-        saveStore(store);
-        return;
+        // Gangguan sementara (soket WA belum siap): coba lagi dalam 15 detik.
+        // BATASI jumlah percobaan — satu kontak yang macet TIDAK BOLEH menahan
+        // seluruh antrean selamanya. Setelah batas tercapai, tandai gagal dan
+        // biarkan antrean lanjut ke kontak berikutnya.
+        const MAX_TEMP_RETRIES = 6; // ±90 detik toleransi menyambung ulang
+        const retries = (dueItem.tempRetryCount || 0) + 1;
+        dueItem.tempRetryCount = retries;
+        if (retries <= MAX_TEMP_RETRIES) {
+          dueItem.status = 'queued';
+          dueItem.scheduledAtMs = Date.now() + 15000;
+          dueItem.errorMessage = undefined;
+          saveStore(store);
+          return;
+        }
+        dueItem.status = 'failed';
+        dueItem.errorMessage =
+          'Sesi WhatsApp tidak stabil (berkali-kali gagal menyambung). Kontak ini dilewati agar antrean tetap berjalan — gunakan tombol Kirim Ulang setelah koneksi benar-benar stabil.';
       } else {
         dueItem.status = 'failed';
         dueItem.errorMessage = result.error || 'Pengiriman gagal';
@@ -3760,7 +3772,7 @@ ATURAN PENTING:
         triggeredAt: nowIso,
         triggerType: 'schedule_activated',
         contactCount: targetContacts.length,
-        notes: `Jadwal diaktifkan: projek akan mengirim otomatis sesuai jadwal (${proj.scheduleTime || 'jam terjadwal'}).`,
+        notes: `Jadwal diaktifkan: projek akan mengirim otomatis sesuai jadwal (jam ${proj.sendTime || 'terjadwal'}).`,
       });
     }
 
@@ -3873,9 +3885,16 @@ ATURAN PENTING:
       res.status(404).json({ error: 'Log pengiriman tidak ditemukan.' });
       return;
     }
+    // Ambil nomor TERBARU dari data kontak (bila user sudah membetulkan nomornya,
+    // kirim ulang harus memakai nomor yang baru, bukan nomor lama di log).
+    const contact = store.contacts.find((c) => c.id === item.contactId);
+    if (contact && contact.phone) {
+      item.contactPhone = contact.phone;
+    }
     const randomSec = getRandomInt(3, 10);
     item.status = 'queued';
     item.errorMessage = undefined;
+    item.tempRetryCount = 0;
     item.randomDelayAppliedSec = randomSec;
     item.scheduledAtMs = Date.now() + randomSec * 1000;
     saveStore(store);

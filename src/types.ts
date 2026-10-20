@@ -114,6 +114,7 @@ export interface DeliveryLog {
   messageType: 'scheduled' | 'manual' | 'test';
   renderedMessage: string;
   status: 'queued' | 'sending' | 'sent' | 'failed' | 'paused' | 'stopped';
+  tempRetryCount?: number;
   randomDelayAppliedSec: number;
   remainingMsWhenPaused?: number;
   scheduledAtMs: number;
