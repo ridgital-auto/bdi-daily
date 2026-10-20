@@ -3674,6 +3674,94 @@ ATURAN PENTING:
         contactCount: targetContacts.length,
         notes: `Mulai pengiriman dari Hadis No. ${activeIdx + 1} (${chosenHadith.title}) ke seluruh ${targetContacts.length} kontak penerima.`,
       });
+    } else if (action === 'send_now_once') {
+      // Kirim Sekarang (satu kali): kirim langsung TANPA mengubah status/jadwal projek.
+      // Cocok untuk kiriman darurat/tambahan di luar jadwal rutin.
+      const targetContacts = getCandidateContactsForProject(proj);
+      if (targetContacts.length === 0) {
+        res.status(400).json({ error: 'Tidak ada kontak penerima aktif untuk target projek ini.' });
+        return;
+      }
+      const pool = getCandidateHadithsForProject(proj);
+      if (pool.length === 0) {
+        res.status(400).json({ error: 'Database hadis untuk projek ini kosong.' });
+        return;
+      }
+      const explicitHadithId = req.body?.hadithId;
+      const targetIndex = Number(req.body?.targetIndex);
+      if (explicitHadithId) {
+        const foundIdx = pool.findIndex((h) => h.id === explicitHadithId);
+        if (foundIdx !== -1) proj.currentDatabaseIndex = foundIdx;
+      } else if (!isNaN(targetIndex) && targetIndex >= 0 && targetIndex < pool.length) {
+        proj.currentDatabaseIndex = targetIndex;
+      }
+      const activeIdx = Math.min(pool.length - 1, Math.max(0, proj.currentDatabaseIndex || 0));
+      const chosenHadith = pool[activeIdx];
+      if (!chosenHadith) {
+        res.status(400).json({ error: 'Hadis pilihan tidak ditemukan.' });
+        return;
+      }
+      // Hapus antrean lama projek ini saja (jangan ubah status/lastTriggeredDate/index)
+      store.deliveryLogs = store.deliveryLogs.filter(
+        (l) => !(l.projectId === proj.id && (l.status === 'queued' || l.status === 'paused' || l.status === 'sending'))
+      );
+      chosenHadith.isSent = true;
+      proj.totalSentCount = (proj.totalSentCount || 0) + targetContacts.length;
+      enqueueBroadcastBatch({
+        hadith: chosenHadith,
+        contacts: targetContacts,
+        messageType: 'scheduled',
+        projectId: proj.id,
+        projectName: proj.name,
+        minDelaySeconds: proj.minDelaySeconds,
+        maxDelaySeconds: proj.maxDelaySeconds,
+        templateMode: proj.templateMode || 'auto_contact',
+        templateId: proj.templateId,
+        detailTemplateId: proj.detailTemplateId,
+        singkatTemplateId: proj.singkatTemplateId,
+        forceResendAll: true,
+      });
+      store.projectHistory.unshift({
+        id: `hist-${nowMs}`,
+        projectId: proj.id,
+        projectName: proj.name,
+        hadithId: chosenHadith.id,
+        hadithTitle: chosenHadith.title,
+        profileName: chosenHadith.profileName || 'Belum Terkategori',
+        triggeredAt: nowIso,
+        triggerType: 'manual_once',
+        contactCount: targetContacts.length,
+        notes: `Kirim Sekarang (satu kali): Hadis No. ${activeIdx + 1} (${chosenHadith.title}) ke ${targetContacts.length} kontak. Jadwal projek tidak berubah.`,
+      });
+    } else if (action === 'activate_schedule') {
+      // Jalankan Sesuai Jadwal: aktifkan projek TANPA kirim sekarang.
+      // Scheduler otomatis akan mengirim pada jam jadwal berikutnya
+      // (hari ini jam 10:00 bila belum lewat, atau jadwal berikutnya).
+      const targetContacts = getCandidateContactsForProject(proj);
+      if (targetContacts.length === 0) {
+        res.status(400).json({ error: 'Tidak ada kontak penerima aktif untuk target projek ini.' });
+        return;
+      }
+      const pool = getCandidateHadithsForProject(proj);
+      if (pool.length === 0) {
+        res.status(400).json({ error: 'Database hadis untuk projek ini kosong.' });
+        return;
+      }
+      proj.status = 'running';
+      // Jangan set lastTriggeredDate: biarkan scheduler yang menentukan
+      // apakah jadwal hari ini sudah lewat atau belum.
+      store.projectHistory.unshift({
+        id: `hist-${nowMs}`,
+        projectId: proj.id,
+        projectName: proj.name,
+        hadithId: '',
+        hadithTitle: '',
+        profileName: '',
+        triggeredAt: nowIso,
+        triggerType: 'schedule_activated',
+        contactCount: targetContacts.length,
+        notes: `Jadwal diaktifkan: projek akan mengirim otomatis sesuai jadwal (${proj.scheduleTime || 'jam terjadwal'}).`,
+      });
     }
 
     store.projectHistory = store.projectHistory.slice(0, 200);

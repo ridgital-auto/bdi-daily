@@ -2759,6 +2759,8 @@ export default function App() {
       | 'resume'
       | 'stop'
       | 'run_now'
+      | 'send_now_once'
+      | 'activate_schedule'
       | 'next_hadith'
       | 'prev_hadith'
       | 'set_hadith',
@@ -2789,6 +2791,8 @@ export default function App() {
           resume: 'Projek dilanjutkan kembali (Running).',
           stop: 'Projek dihentikan & antrean dibatalkan (Stopped).',
           run_now: 'Projek langsung dijalankan sekarang dengan interval acak!',
+          send_now_once: 'Hadis dikirim sekarang (satu kali, jadwal tidak berubah).',
+          activate_schedule: 'Jadwal diaktifkan! Projek akan kirim otomatis sesuai jam jadwal.',
           next_hadith: 'Materi selanjutnya berhasil dipilih.',
           prev_hadith: 'Materi sebelumnya berhasil dipilih.',
           set_hadith: 'Materi hadis berhasil disetel.',
@@ -8782,19 +8786,30 @@ export default function App() {
                             </button>
                           )}
 
-                          <button
-                            type="button"
-                            onClick={() => handleProjectAction(proj.id, 'run_now')}
-                            className="ml-auto min-h-[40px] px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5"
-                            title={`Kirim Hadis No. ${activeHadithIndex + 1} sekarang`}
-                          >
-                            <Send className="w-3.5 h-3.5" />
-                            <span>
-                              {projQueued > 0
-                                ? `Kirim Sekarang (${projQueued} Antre)`
-                                : `Kirim Hadis No. ${activeHadithIndex + 1} Sekarang`}
-                            </span>
-                          </button>
+                          <div className="ml-auto flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleProjectAction(proj.id, 'send_now_once')}
+                              className="min-h-[40px] px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5"
+                              title={`Kirim Hadis No. ${activeHadithIndex + 1} sekarang juga (satu kali, tanpa mengubah jadwal)`}
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>
+                                {projQueued > 0
+                                  ? `Kirim Sekarang (${projQueued} Antre)`
+                                  : `Kirim Sekarang`}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleProjectAction(proj.id, 'activate_schedule')}
+                              className="min-h-[40px] px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5"
+                              title="Aktifkan jadwal otomatis (kirim sesuai jam jadwal, tanpa kirim sekarang)"
+                            >
+                              <Clock className="w-3.5 h-3.5" />
+                              <span>Jalankan Sesuai Jadwal</span>
+                            </button>
+                          </div>
                         </div>
 
                         {/* DEDICATED PER-PROJECT LOG & PROGRESS DRAWER */}
